@@ -81,7 +81,7 @@ minecraft {
     mcpMappingVersion.set("39")
 
     // Set username here, the UUID will be looked up automatically
-    username.set("Developer")
+    username.set("tom500101")
 
     // Add any additional tweaker classes here
     // extraTweakClasses.add("org.spongepowered.asm.launch.MixinTweaker")
@@ -106,7 +106,7 @@ minecraft {
     // Example:
     injectedTags.put("VERSION", project.version)
     injectedTags.put("MOD_ID", mod_id)
-    injectedTags.put("MOD_NAME", archives_base_name)
+    injectedTags.put("MOD_NAME", "RLcraft Explorer's Compass")
 }
 
 // Generate a group.archives_base_name.Tags class
@@ -146,8 +146,12 @@ dependencies {
         implementation("zone.rong:mixinbooter:7.1")
     }
 
-    // Example of deobfuscating a dependency
-    // implementation rfg.deobf("curse.maven:had-enough-items-557549:4543375")
+    // RLCraft 模组依赖：从项目根目录的 libs/ 文件夹加载所有 jar 并反混淆
+    // 把 Recurrent Complex、Battle Towers、Roguelike Dungeons 等 jar 放进 libs/ 即可
+    val libsFileTree = fileTree("libs") { include("*.jar") }
+    if (!libsFileTree.isEmpty) {
+        implementation(rfg.deobf(libsFileTree))
+    }
 
     if (use_mixins.toBoolean()) {
         // Change your mixin refmap name here:
