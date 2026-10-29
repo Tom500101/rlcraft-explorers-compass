@@ -20,7 +20,7 @@ plugins {
     id("maven-publish")
     id("org.jetbrains.gradle.plugin.idea-ext") version "1.1.7"
     id("eclipse")
-    id("com.gtnewhorizons.retrofuturagradle") version "2.0.2"
+    id("com.gtnewhorizons.retrofuturagradle") version "2.0.6"
     id("com.matthewprenger.cursegradle") version "1.4.0"
 }
 
@@ -54,8 +54,6 @@ val coremod_plugin_class_name: String by project
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(8))
-        // Azul covers the most platforms for Java 8 toolchains, crucially including MacOS arm64
-        vendor.set(JvmVendorSpec.AZUL)
     }
     // Generate sources and javadocs jars when building and publishing
     withSourcesJar()
@@ -96,6 +94,17 @@ minecraft {
         args += "-Dmixin.checks.interfaces=true"
         args += "-Dmixin.debug.export=true"
     }
+    // Runs the stage-1 structure probe automatically on server start when the build is invoked as
+    // `gradlew runServer -Pprobe`. A dedicated server cannot be typed into from a scripted shell, so
+    // this is how the probe gets exercised without a player.
+    if (project.hasProperty("probe")) {
+        args += "-Drlcompass.probe=true"
+    }
+    // Runs the locator self-test (one search per registered structure) on server start:
+    // `gradlew runServer -Pselftest`.
+    if (project.hasProperty("selftest")) {
+        args += "-Drlcompass.selftest=true"
+    }
     extraRunJvmArguments.addAll(args)
 
     // Include and use dependencies' Access Transformer files
@@ -104,15 +113,32 @@ minecraft {
     // Add any properties you want to swap out for a dynamic value at build time here
     // Any properties here will be added to a class at build time, the name can be configured below
     // Example:
-    injectedTags.put("VERSION", project.version)
+    injectedTags.put("VERSION", mod_version)
     injectedTags.put("MOD_ID", mod_id)
     injectedTags.put("MOD_NAME", "RLcraft Explorer's Compass")
 }
 
 // Generate a group.archives_base_name.Tags class
 tasks.injectTags.configure {
-    // Change Tags class' name here:
-    outputClassName.set("${maven_group}.${archives_base_name}.Tags")
+    // Change Tags class' name here. maven_group is already "com.tom500101.rlcompass", so do not
+    // append archives_base_name again — that produced com.tom500101.rlcompass.rlcompass.Tags.
+    outputClassName.set("${maven_group}.Tags")
+}
+
+// Gradle 9 enforces task-dependency validation strictly, but RFG 2.0.x leaves its generated
+// source sets unwired to the tasks that produce them, which aborts the build with e.g.
+//   "Task ':compileInjectedTagsKotlin' uses this output of task ':injectTags' without declaring
+//    an explicit or implicit dependency"
+// Declare every producer -> consumer pair up front.
+listOf(
+    "compileInjectedTagsKotlin" to "injectTags",
+    "compileInjectedTagsJava" to "injectTags",
+    "compilePatchedMcKotlin" to "decompressDecompiledSources",
+    "compilePatchedMcJava" to "decompressDecompiledSources",
+    "compileMcLauncherKotlin" to "createMcLauncherFiles",
+    "compileMcLauncherJava" to "createMcLauncherFiles",
+).forEach { (consumer, producer) ->
+    tasks.matching { it.name == consumer }.configureEach { dependsOn(producer) }
 }
 
 repositories {
@@ -173,7 +199,7 @@ dependencies {
 @Suppress("Deprecation")
 if (use_access_transformer.toBoolean()) {
     for (at in sourceSets.getByName("main").resources.files) {
-        if (at.name.toLowerCase().endsWith("_at.cfg")) {
+        if (at.name.lowercase().endsWith("_at.cfg")) {
             tasks.deobfuscateMergedJarToSrg.get().accessTransformerFiles.from(at)
             tasks.srgifyBinpatchedJar.get().accessTransformerFiles.from(at)
         }
@@ -190,7 +216,9 @@ tasks.withType<ProcessResources> {
     filesMatching(arrayListOf("mcmod.info", "pack.mcmeta")) {
         expand(
             "version" to mod_version,
-            "mcversion" to minecraft.mcVersion
+            // NOTE: minecraft.mcVersion is a Property<String>; without .get() the template
+            // would expand to the literal "extension 'minecraft' property 'mcVersion'".
+            "mcversion" to minecraft.mcVersion.get()
         )
     }
 
@@ -256,4 +284,53 @@ idea {
 
 tasks.named("processIdeaSettings").configure {
     dependsOn("injectTags")
+}
+
+// One-shot bootstrap: the 32 compass frames and their per-frame models are generated from the
+// reference mod jar so the shipped assets are plain files under src/. Not wired into build;
+// run it explicitly only when the frames need to be re-imported.
+tasks.register("bootstrapCompassTextures") {
+    doLast {
+        val refDir = file(".tools/wts-inspect/decompiled/assets/wheresthatstructure/textures/item")
+        val texDir = file("src/main/resources/assets/rlcompass/textures/item")
+        val modelDir = file("src/main/resources/assets/rlcompass/models/item")
+        texDir.mkdirs()
+        modelDir.mkdirs()
+        File(texDir, ".gitkeep").delete()
+
+        refDir.listFiles { f -> f.name.endsWith(".png") }?.forEach { f ->
+            f.copyTo(File(texDir, f.name.replace("explorerscompass_", "explorers_compass_")), overwrite = true)
+        }
+
+        for (k in 1..31) {
+            val nn = k.toString().padStart(2, '0')
+            File(modelDir, "explorers_compass_$nn.json").writeText(
+                "{\n" +
+                    "    \"parent\": \"item/generated\",\n" +
+                    "    \"textures\": {\n" +
+                    "        \"layer0\": \"rlcompass:item/explorers_compass_$nn\"\n" +
+                    "    }\n" +
+                    "}\n"
+            )
+        }
+
+        val overrides = (1..31).joinToString(",\n") { k ->
+            val nn = k.toString().padStart(2, '0')
+            // k/32 written out exactly: 1/32 = 0.03125, so k*3125 is k/32 in hundred-thousandths.
+            val threshold = "0." + (k * 3125).toString().padStart(5, '0')
+            "        { \"predicate\": { \"angle\": $threshold }, \"model\": \"rlcompass:item/explorers_compass_$nn\" }"
+        }
+        File(modelDir, "explorers_compass.json").writeText(
+            "{\n" +
+                "    \"parent\": \"item/generated\",\n" +
+                "    \"textures\": {\n" +
+                "        \"layer0\": \"rlcompass:item/explorers_compass_00\"\n" +
+                "    },\n" +
+                "    \"overrides\": [\n" +
+                overrides + "\n" +
+                "    ]\n" +
+                "}\n"
+        )
+        println("compass frames + models generated")
+    }
 }

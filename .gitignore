@@ -20,3 +20,9 @@ build
 # other
 eclipse
 run
+
+# local mod dependencies: third-party RLCraft jars, never committed
+libs/
+
+# local toolchain (e.g. a JDK downloaded for the RFG 2.x build) — never committed
+.tools/

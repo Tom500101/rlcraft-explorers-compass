@@ -1,14 +1,14 @@
 [
 {
-  "modid": "examplemod",
-  "name": "Example Mod",
-  "description": "Example placeholder mod.",
+  "modid": "rlcompass",
+  "name": "RLcraft Explorer's Compass",
+  "description": "An Explorer's Compass for RLCraft: locates modded structures within a configurable radius, nearest first.",
   "version": "${version}",
   "mcversion": "${mcversion}",
-  "url": "",
+  "url": "https://github.com/Tom500101/rlcraft-explorers-compass",
   "updateUrl": "",
-  "authorList": ["CleanroomMC"],
-  "credits": "Authors of this project",
+  "authorList": ["tom500101"],
+  "credits": "Compass textures adapted from Explorer's Compass by ChaosTheDude (maintained by Matt Czyr), 1.12.2 port by thebluecrusader, licensed CC BY-NC-SA 4.0. See NOTICE.",
   "logoFile": "",
   "screenshots": [],
   "dependencies": []

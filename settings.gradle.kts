@@ -15,10 +15,12 @@ pluginManagement {
     }
 }
 
-plugins {
-    // Automatic toolchain provisioning
-    id("org.gradle.toolchains.foojay-resolver-convention") version "0.4.0"
-}
+// NOTE: org.gradle.toolchains.foojay-resolver-convention is deliberately NOT applied.
+// Every published version (0.4.0 … 1.0.0) references JvmVendorSpec.IBM_SEMERU, a field
+// Gradle 9 removed, so simply loading it during project evaluation aborts the build with
+//     Class org.gradle.jvm.toolchain.JvmVendorSpec does not have member field … IBM_SEMERU
+// Toolchains are therefore resolved from local JDK installations only — JDK 8 is declared
+// through org.gradle.java.installations.paths in gradle.properties.
 
 dependencyResolutionManagement { 
     versionCatalogs { 
