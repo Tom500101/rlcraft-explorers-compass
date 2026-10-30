@@ -1,0 +1,37 @@
+RLcraft Explorer's Compass
+Copyright (c) 2026 tom500101
+
+本项目的代码与原创文档以 MIT 许可证发布，完整文本见 LICENSE。
+
+---------------------------------------------------------------------------
+第三方资源：指南针表盘贴图（CC BY-NC-SA 4.0）
+---------------------------------------------------------------------------
+
+下列 32 张贴图（指南针 32 帧动态表盘）是对第三方作品的改编：
+
+    src/main/resources/assets/rlcompass/textures/item/
+        explorers_compass_00.png ... explorers_compass_31.png
+
+原作品：Explorer's Compass
+    原作者：    ChaosTheDude
+    现维护者：  Matt Czyr
+    源代码：    https://github.com/MattCzyr/ExplorersCompass
+    发布页：    https://modrinth.com/mod/explorers-compass
+    1.12.2 移植：thebluecrusader（Where's That Structure 1.12.2 移植，
+                 Modrinth/CurseForge 发布 wheresthatstructure-1.12.2-1.0.0.jar）
+
+许可协议：知识共享 署名-非商业性使用-相同方式共享 4.0 国际
+（Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International）
+    法律文本：  https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+    协议摘要：  https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+依据该协议：
+  1. 署名（BY）——以上原作者与移植者署名必须保留；
+  2. 非商业（NC）——这些贴图以及包含它们的整个模组 jar
+     不得用于任何商业目的（不得出售、不得用于商业整合包分发或其他商业用途）；
+  3. 相同方式共享（SA）——这 32 张贴图的副本与改编版本继续以
+     CC BY-NC-SA 4.0 发布，不得转为更封闭或许可更宽的协议。
+
+除上述贴图外，本仓库的全部 Java/Kotlin 源码、构建脚本与文档均为
+tom500101 以 MIT 许可证发布的原创作品，MIT 授予的商业使用权利
+不适用于上述 CC BY-NC-SA 4.0 贴图。

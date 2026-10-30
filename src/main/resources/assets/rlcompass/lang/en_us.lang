@@ -1,0 +1,17 @@
+item.rlcompass.explorers_compass.name=Explorer's Compass
+
+gui.rlcompass.title=Explorer's Compass
+gui.rlcompass.subtitle=Locate structures near you
+gui.rlcompass.hint=Type to filter | @mod filters by source
+gui.rlcompass.filter=Filter Results
+gui.rlcompass.actions=Actions
+gui.rlcompass.catalog=Structure Catalog
+gui.rlcompass.count=Showing %s of %s structures
+gui.rlcompass.empty=No structures are available
+gui.rlcompass.noMatch=Nothing matches the filter
+gui.rlcompass.search=Search
+gui.rlcompass.sortBy=Sort: %s
+gui.rlcompass.sortName=Name
+gui.rlcompass.sortSource=Source
+gui.rlcompass.rowSource=Source: %s
+gui.rlcompass.rowId=ID: %s

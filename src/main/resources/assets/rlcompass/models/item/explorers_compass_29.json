@@ -1,0 +1,6 @@
+{
+    "parent": "item/generated",
+    "textures": {
+        "layer0": "rlcompass:item/explorers_compass_29"
+    }
+}
