@@ -31,7 +31,11 @@ public class ItemExplorersCompass extends Item {
 
     public static final String REGISTRY_NAME = "explorers_compass";
 
+    /** The single registered instance, for identity checks ({@code stack.getItem() == INSTANCE}) on the client. */
+    public static ItemExplorersCompass INSTANCE;
+
     public ItemExplorersCompass() {
+        INSTANCE = this;
         // MCP stable_39 renamed setUnlocalizedName -> setTranslationKey (the older snapshot mapping
         // used the former name; the project is on stable_39).
         setTranslationKey("rlcompass." + REGISTRY_NAME);
