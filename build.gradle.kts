@@ -37,6 +37,16 @@ val include_mod: String by project
 @Suppress("PropertyName")
 val coremod_plugin_class_name: String by project
 
+/**
+ * Client smoke test wiring: `-Pclienttest=<mode>` is forwarded to the forked client JVM as
+ * `-Drlcompass.clienttest=<mode>`, and `-Pclienttest.worldwait=<ticks>` as
+ * `-Drlcompass.clienttest.worldwait=<ticks>`. Without either property no jvmArgs are added, so a
+ * normal `runClient` is unchanged. When both a `-P` and a manual `-D` are present `-P` wins,
+ * because the appended `-D` is the last one.
+ */
+val clientTestMode: String? = (findProperty("clienttest") as String?)?.trim()
+val clientTestWorldWait: String? = (findProperty("clienttest.worldwait") as String?)?.trim()
+
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(8))
@@ -48,6 +58,19 @@ java {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+if (!clientTestMode.isNullOrEmpty() || !clientTestWorldWait.isNullOrEmpty()) {
+    tasks.matching { it.name == "runClient" }.configureEach {
+        if (this is org.gradle.api.tasks.JavaExec) {
+            if (!clientTestMode.isNullOrEmpty()) {
+                jvmArgs("-Drlcompass.clienttest=$clientTestMode")
+            }
+            if (!clientTestWorldWait.isNullOrEmpty()) {
+                jvmArgs("-Drlcompass.clienttest.worldwait=$clientTestWorldWait")
+            }
+        }
+    }
 }
 
 configurations {
