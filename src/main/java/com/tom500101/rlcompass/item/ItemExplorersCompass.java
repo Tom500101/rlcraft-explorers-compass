@@ -51,8 +51,9 @@ public class ItemExplorersCompass extends Item {
     public ActionResult<ItemStack> onItemRightClick(World world, EntityPlayer player, EnumHand hand) {
         ItemStack stack = player.getHeldItem(hand);
         if (!world.isRemote && player instanceof EntityPlayerMP) {
+            // P0: world-aware filter — hide ids whose locator has no data source in this world.
             PacketHandler.sendOpenGui((EntityPlayerMP) player,
-                    StructureLocatorRegistry.get().getSelectableIds());
+                    StructureLocatorRegistry.get().getSelectableIds(world));
         }
         return new ActionResult<ItemStack>(EnumActionResult.SUCCESS, stack);
     }
@@ -62,16 +63,21 @@ public class ItemExplorersCompass extends Item {
      * player's client. Returns the result for logging, or {@code null} when nothing was found.
      */
     public static StructureResult search(EntityPlayerMP player, String structureId) {
+        return search(player, structureId, null);
+    }
+
+    /** Variant-aware variant used by the picker; {@code variantId} may be null. */
+    public static StructureResult search(EntityPlayerMP player, String structureId, String variantId) {
         World world = player.getEntityWorld();
         BlockPos origin = player.getPosition();
         int dimension = world.provider.getDimension();
         StructureResult result = StructureLocatorRegistry.get()
-                .findNearest(world, origin, structureId, CompassConfig.searchRadius);
+                .findNearest(world, origin, structureId, CompassConfig.searchRadius, variantId);
         if (result == null) {
             PacketHandler.sendToPlayer(PacketStructureResult.notFound(structureId, dimension), player);
         } else {
-            PacketHandler.sendToPlayer(
-                    PacketStructureResult.found(result.getStructureId(), result.getPos(), dimension), player);
+            PacketHandler.sendToPlayer(PacketStructureResult.found(result.getStructureId(), result.getPos(),
+                    dimension, result.getVariantId(), result.isVariantConfirmed()), player);
         }
         return result;
     }

@@ -64,7 +64,8 @@ public class CommandRLCompass extends CommandBase {
                 return;
 
             case "list": {
-                List<String> ids = StructureLocatorRegistry.get().getSelectableIds();
+                // P0: world-aware filter — hide ids whose locator has no data source in this world.
+                List<String> ids = StructureLocatorRegistry.get().getSelectableIds(world);
                 reply(sender, ids.isEmpty()
                         ? "no structures registered"
                         : "searchable: " + String.join(", ", ids));
@@ -80,6 +81,14 @@ public class CommandRLCompass extends CommandBase {
                     reply(sender, structureId + " is blacklisted in the config");
                     return;
                 }
+                // Distinguish "this world cannot answer for the id" from "searched, nothing in
+                // range". The picker already hides unavailable ids; the command must say so too.
+                String canonicalId = StructureLocatorRegistry.canonical(structureId);
+                if (!StructureLocatorRegistry.get().getSelectableIds(world).contains(canonicalId)) {
+                    reply(sender, structureId + " is not available in this world "
+                            + "(another mod may have replaced its generation)");
+                    return;
+                }
                 long startedAt = System.currentTimeMillis();
                 StructureResult result = StructureLocatorRegistry.get()
                         .findNearest(world, origin, structureId, CompassConfig.searchRadius);
@@ -88,11 +97,19 @@ public class CommandRLCompass extends CommandBase {
                     reply(sender, "no " + structureId + " within " + CompassConfig.searchRadius
                             + " blocks (" + elapsed + " ms)");
                 } else {
-                    reply(sender, StructureNameUtil.displayName(result.getStructureId())
-                            + " at (" + result.getPos().getX() + ", " + result.getPos().getY()
-                            + ", " + result.getPos().getZ() + "), " + Math.round(result.getDistance())
-                            + " blocks away, found by " + result.getSource()
-                            + " (" + elapsed + " ms)");
+                    StringBuilder text = new StringBuilder();
+                    text.append(StructureNameUtil.displayName(result.getStructureId()))
+                            .append(" at (").append(result.getPos().getX()).append(", ")
+                            .append(result.getPos().getY()).append(", ")
+                            .append(result.getPos().getZ()).append("), ")
+                            .append(Math.round(result.getDistance())).append(" blocks away, found by ")
+                            .append(result.getSource()).append(" (").append(elapsed).append(" ms)");
+                    if (result.getVariantId() != null) {
+                        text.append(result.isVariantConfirmed()
+                                ? " [theme: " + result.getVariantId() + "]"
+                                : " [theme unknown - themed search is approximate; verify after generation]");
+                    }
+                    reply(sender, text.toString());
                 }
                 return;
             }
@@ -165,8 +182,10 @@ public class CommandRLCompass extends CommandBase {
             return getListOfStringsMatchingLastWord(args, SUBCOMMANDS.toArray(new String[0]));
         }
         if (args.length == 2 && "find".equalsIgnoreCase(args[0])) {
+            // P0: world-aware filter — do not suggest ids that cannot answer here.
             return getListOfStringsMatchingLastWord(args,
-                    StructureLocatorRegistry.get().getSelectableIds().toArray(new String[0]));
+                    StructureLocatorRegistry.get().getSelectableIds(sender.getEntityWorld())
+                            .toArray(new String[0]));
         }
         return Collections.emptyList();
     }

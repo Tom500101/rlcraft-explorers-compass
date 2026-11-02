@@ -1,6 +1,8 @@
 package com.tom500101.rlcompass.locate;
 
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -37,6 +39,52 @@ public interface IStructureLocator {
      * {@code playerPos}, or {@code null} when there is none.
      */
     StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius);
+
+    /**
+     * Variant-aware search. The default ignores {@code variantId} and answers for the parent, which
+     * is the correct fallback for every locator that has no variant data.
+     */
+    default StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
+                                        String variantId) {
+        return findNearest(world, playerPos, structureId, radius);
+    }
+
+    /**
+     * Variants this locator can expose for {@code world}. An empty list means "no variant data";
+     * the picker then shows only the parent row. Locators that do return variants should keep the
+     * parent searchable as well.
+     */
+    default List<StructureVariant> getVariants(World world) {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Whether this locator can answer in {@code world} right now.
+     *
+     * <p>Registration is static, so an adapter can be wired up long before its data source exists,
+     * or after another mod has replaced that data source. {@link
+     * StructureLocatorRegistry#getSelectableIds(net.minecraft.world.World)} asks this before
+     * offering an id, so the picker never lists something that can only answer {@code null}.
+     *
+     * <p>Defaults to {@code true} so existing adapters keep their current behaviour. New code
+     * should call {@link #canAnswer(World, String)}: a locator that serves several ids can answer
+     * for some of them and not others (the cache mirror is the usual case — it may hold ruins but
+     * no towers).
+     */
+    default boolean canAnswer(World world) {
+        return true;
+    }
+
+    /**
+     * Per-id availability. {@code StructureLocatorRegistry#getSelectableIds(World)} asks this for
+     * every id a locator advertises, so an id is listed only when at least one supporting locator
+     * can answer <b>for that id</b>.
+     *
+     * <p>Defaults to {@link #canAnswer(World)} so existing locators keep their behaviour.
+     */
+    default boolean canAnswer(World world, String id) {
+        return canAnswer(world);
+    }
 
     /**
      * Lower runs first. Used only to order evaluation, not to short-circuit: every supporting

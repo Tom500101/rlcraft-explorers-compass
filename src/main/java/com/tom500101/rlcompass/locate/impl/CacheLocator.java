@@ -35,6 +35,26 @@ public class CacheLocator implements IStructureLocator {
         return ids;
     }
 
+    /**
+     * P0: an empty cache cannot answer either. Without this, the mirror would keep advertising
+     * {@code rlcompass:battletower} even after the live adapter has been filtered out.
+     */
+    @Override
+    public boolean canAnswer(World world, String id) {
+        if (world == null) {
+            return true;
+        }
+        String canonical = StructureNameUtil.canonical(id);
+        if (!getSupportedIds().contains(canonical)) {
+            return false;
+        }
+        StructureCacheData cache = CacheRecorder.get(world);
+        if (cache == null) {
+            return false;
+        }
+        return cache.countFor(world.provider.getDimension(), canonical) > 0;
+    }
+
     @Override
     public int priority() {
         return 200;

@@ -24,24 +24,35 @@ public class PacketStructureResult implements IMessage {
     private String structureId = "";
     private int dimension;
     private BlockPos pos;
+    /** Empty on the wire when the search was for the parent structure. */
+    private String variantId = "";
+    private boolean variantConfirmed;
 
     /** Forge packet deserialisation hook. */
     public PacketStructureResult() {
     }
 
-    private PacketStructureResult(boolean found, String structureId, int dimension, BlockPos pos) {
+    private PacketStructureResult(boolean found, String structureId, int dimension, BlockPos pos,
+                                  String variantId, boolean variantConfirmed) {
         this.found = found;
         this.structureId = structureId == null ? "" : structureId;
         this.dimension = dimension;
         this.pos = pos;
+        this.variantId = variantId == null ? "" : variantId;
+        this.variantConfirmed = variantConfirmed;
     }
 
     public static PacketStructureResult found(String structureId, BlockPos pos, int dimension) {
-        return new PacketStructureResult(true, structureId, dimension, pos);
+        return found(structureId, pos, dimension, null, false);
+    }
+
+    public static PacketStructureResult found(String structureId, BlockPos pos, int dimension,
+                                              String variantId, boolean variantConfirmed) {
+        return new PacketStructureResult(true, structureId, dimension, pos, variantId, variantConfirmed);
     }
 
     public static PacketStructureResult notFound(String structureId, int dimension) {
-        return new PacketStructureResult(false, structureId, dimension, null);
+        return new PacketStructureResult(false, structureId, dimension, null, null, false);
     }
 
     public boolean isFound() {
@@ -60,11 +71,27 @@ public class PacketStructureResult implements IMessage {
         return pos;
     }
 
+    /** Requested variant id, or {@code null} when the search was for the parent. */
+    public String getVariantId() {
+        return variantId == null || variantId.isEmpty() ? null : variantId;
+    }
+
+    public boolean isVariantConfirmed() {
+        return variantConfirmed;
+    }
+
     @Override
     public void fromBytes(ByteBuf buf) {
+        // This boolean is toBytes' writePos (found && pos != null), not the raw found bit: it says
+        // whether the three coordinate ints were written at all. Reconstructing found from it keeps
+        // the read side symmetric with the write side without inspecting pos, which is still unset
+        // here and would always be null on a freshly allocated instance.
         found = buf.readBoolean();
         structureId = ByteBufUtils.readUTF8String(buf);
         dimension = buf.readInt();
+        variantId = ByteBufUtils.readUTF8String(buf);
+        variantConfirmed = buf.readBoolean();
+        // Matches toBytes: the coordinates are present exactly when that flag was set.
         if (found) {
             pos = new BlockPos(buf.readInt(), buf.readInt(), buf.readInt());
         } else {
@@ -78,6 +105,8 @@ public class PacketStructureResult implements IMessage {
         buf.writeBoolean(writePos);
         ByteBufUtils.writeUTF8String(buf, structureId);
         buf.writeInt(dimension);
+        ByteBufUtils.writeUTF8String(buf, variantId == null ? "" : variantId);
+        buf.writeBoolean(variantConfirmed);
         if (writePos) {
             buf.writeInt(pos.getX());
             buf.writeInt(pos.getY());
@@ -99,8 +128,9 @@ public class PacketStructureResult implements IMessage {
                 @Override
                 public void run() {
                     if (message.isFound()) {
-                        ClientCompassState.setTarget(
-                                message.getStructureId(), message.getPos(), message.getDimension());
+                        ClientCompassState.setTarget(message.getStructureId(), message.getPos(),
+                                message.getDimension(), message.getVariantId(),
+                                message.isVariantConfirmed());
                     } else {
                         ClientCompassState.clear();
                     }

@@ -11,8 +11,15 @@ public final class StructureResult {
     private final BlockPos pos;
     private final String source;
     private final double distanceSq;
+    private final String variantId;
+    private final boolean variantConfirmed;
 
     public StructureResult(String structureId, BlockPos pos, String source, double distanceSq) {
+        this(structureId, pos, source, distanceSq, null, false);
+    }
+
+    public StructureResult(String structureId, BlockPos pos, String source, double distanceSq,
+                           String variantId, boolean variantConfirmed) {
         if (structureId == null) {
             throw new IllegalArgumentException("structureId must not be null");
         }
@@ -23,6 +30,13 @@ public final class StructureResult {
         this.pos = pos.toImmutable();
         this.source = source == null ? "unknown" : source;
         this.distanceSq = distanceSq;
+        this.variantId = variantId;
+        this.variantConfirmed = variantConfirmed;
+    }
+
+    /** Returns a copy carrying the requested variant label; used by variant-aware locators. */
+    public StructureResult withVariant(String variantId, boolean confirmed) {
+        return new StructureResult(structureId, pos, source, distanceSq, variantId, confirmed);
     }
 
     /**
@@ -91,9 +105,23 @@ public final class StructureResult {
         return Math.sqrt(distanceSq);
     }
 
+    /** Requested variant id, or {@code null} when the search was for the parent. */
+    public String getVariantId() {
+        return variantId;
+    }
+
+    /** False means "the theme is a guess; verify it in the world". */
+    public boolean isVariantConfirmed() {
+        return variantConfirmed;
+    }
+
     @Override
     public String toString() {
-        return structureId + " @ (" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")"
+        String base = structureId + " @ (" + pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")"
                 + " via " + source + " dist=" + Math.round(getDistance());
+        if (variantId == null) {
+            return base;
+        }
+        return base + " variant=" + variantId + (variantConfirmed ? "" : " (unconfirmed)");
     }
 }

@@ -15,11 +15,17 @@ public final class ClientCompassState {
     private static BlockPos pos;
     private static int dimension;
     private static long updatedAt;
+    private static String variantId;
+    private static boolean variantConfirmed;
 
     private ClientCompassState() {
     }
 
     public static void setTarget(String id, BlockPos target, int dim) {
+        setTarget(id, target, dim, null, false);
+    }
+
+    public static void setTarget(String id, BlockPos target, int dim, String variant, boolean confirmed) {
         if (target == null) {
             clear();
             return;
@@ -27,12 +33,16 @@ public final class ClientCompassState {
         structureId = id == null ? "" : id;
         pos = target.toImmutable();
         dimension = dim;
+        variantId = variant;
+        variantConfirmed = confirmed;
         updatedAt = System.currentTimeMillis();
     }
 
     public static void clear() {
         structureId = "";
         pos = null;
+        variantId = null;
+        variantConfirmed = false;
         updatedAt = 0L;
     }
 
@@ -54,5 +64,14 @@ public final class ClientCompassState {
 
     public static long getUpdatedAt() {
         return updatedAt;
+    }
+
+    /** Requested variant id, or {@code null} when the target is the parent structure. */
+    public static String getVariantId() {
+        return variantId;
+    }
+
+    public static boolean isVariantConfirmed() {
+        return variantConfirmed;
     }
 }

@@ -22,27 +22,41 @@ import com.tom500101.rlcompass.item.ItemExplorersCompass;
 public class PacketSearchRequest implements IMessage {
 
     private String structureId = "";
+    /** {@code null} means "search the parent structure"; empty on the wire for symmetry. */
+    private String variantId;
 
     /** Forge packet deserialisation hook. */
     public PacketSearchRequest() {
     }
 
     public PacketSearchRequest(String structureId) {
+        this(structureId, null);
+    }
+
+    public PacketSearchRequest(String structureId, String variantId) {
         this.structureId = structureId == null ? "" : structureId;
+        this.variantId = variantId == null || variantId.trim().isEmpty() ? null : variantId;
     }
 
     public String getStructureId() {
         return structureId;
     }
 
+    public String getVariantId() {
+        return variantId;
+    }
+
     @Override
     public void fromBytes(ByteBuf buf) {
         structureId = ByteBufUtils.readUTF8String(buf);
+        String rawVariant = ByteBufUtils.readUTF8String(buf);
+        variantId = rawVariant == null || rawVariant.isEmpty() ? null : rawVariant;
     }
 
     @Override
     public void toBytes(ByteBuf buf) {
         ByteBufUtils.writeUTF8String(buf, structureId);
+        ByteBufUtils.writeUTF8String(buf, variantId == null ? "" : variantId);
     }
 
     public static class Handler implements IMessageHandler<PacketSearchRequest, IMessage> {
@@ -61,7 +75,7 @@ public class PacketSearchRequest implements IMessage {
             server.addScheduledTask(new Runnable() {
                 @Override
                 public void run() {
-                    ItemExplorersCompass.search(player, message.getStructureId());
+                    ItemExplorersCompass.search(player, message.getStructureId(), message.getVariantId());
                 }
             });
             return null;

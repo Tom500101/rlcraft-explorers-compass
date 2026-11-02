@@ -164,7 +164,8 @@ public class RLCompassMod {
         }
         LOG.info("[SELFTEST] cache rebuild wrote {} positions", CacheRecorder.rebuild(world));
 
-        List<String> ids = StructureLocatorRegistry.get().getSelectableIds();
+        // P0: world-aware filter — searching an id with no data source only logs a guaranteed null.
+        List<String> ids = StructureLocatorRegistry.get().getSelectableIds(world);
         LOG.info("[SELFTEST] origin=({}, {}) radius={} ids={}",
                 origin.getX(), origin.getZ(), CompassConfig.searchRadius, ids);
         for (String id : ids) {
