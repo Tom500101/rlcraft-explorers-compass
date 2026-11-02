@@ -26,3 +26,6 @@ libs/
 
 # local toolchain (e.g. a JDK downloaded for the RFG 2.x build) — never committed
 .tools/
+
+# assistant scratch space: session notes and memory, local to this machine
+.workbuddy/
