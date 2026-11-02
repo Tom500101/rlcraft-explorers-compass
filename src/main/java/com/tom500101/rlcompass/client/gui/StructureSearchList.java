@@ -80,6 +80,39 @@ public class StructureSearchList extends GuiSlot {
         return hasSelection() ? entries.get(selectedIndex) : null;
     }
 
+    /** Read-only row access used by the client smoke test. */
+    public StructureSearchEntry getEntry(int index) {
+        return index >= 0 && index < entries.size() ? entries.get(index) : null;
+    }
+
+    public String getEntryId(int index) {
+        StructureSearchEntry entry = getEntry(index);
+        return entry == null ? null : entry.getStructureId();
+    }
+
+    public String getEntryDisplayName(int index) {
+        StructureSearchEntry entry = getEntry(index);
+        return entry == null ? "" : entry.getDisplayName();
+    }
+
+    /**
+     * Test hook: two clicks on the same row within {@link #DOUBLE_CLICK_MS}, which is the same path
+     * a player takes. Returns true when both clicks landed inside the list.
+     */
+    public boolean simulateDoubleClick(int index) {
+        if (index < 0 || index >= entries.size()) {
+            return false;
+        }
+        this.amountScrolled = 0;
+        bindAmountScrolled();
+        // Past the expand/collapse marker so a double click always means "search this row".
+        int x = this.left + 24;
+        int y = this.top + index * this.slotHeight + 2;
+        boolean first = handleClick(x, y);
+        boolean second = handleClick(x, y);
+        return first && second;
+    }
+
     /** Handles a left click on a row; returns false when the click was outside the list. */
     public boolean handleClick(int mouseX, int mouseY) {
         if (mouseX < this.left || mouseX > this.right - 10 || mouseY < this.top || mouseY > this.bottom) {
@@ -117,10 +150,16 @@ public class StructureSearchList extends GuiSlot {
         if (slotIndex < 0 || slotIndex >= entries.size()) {
             return;
         }
+        StructureSearchEntry entry = entries.get(slotIndex);
+        // The marker is a separate hit target: single click toggles, double click still searches.
+        if (entry.isExpandable() && !isDoubleClick && mouseX < this.left + 16) {
+            parent.toggleExpansion(entry);
+            return;
+        }
         selectedIndex = slotIndex;
         parent.onSelectionChanged();
         if (isDoubleClick) {
-            parent.searchFor(entries.get(slotIndex).getStructureId());
+            parent.searchFor(entry);
         }
     }
 
@@ -171,7 +210,11 @@ public class StructureSearchList extends GuiSlot {
         CompassPalette.drawOutline(xPos, yPos, entryRight, entryBottom,
                 selected ? CompassPalette.ENTRY_BORDER_SELECTED : CompassPalette.ENTRY_BORDER);
 
-        int textLeft = xPos + 8;
+        if (entry.isExpandable()) {
+            this.mc.fontRenderer.drawString(entry.isExpanded() ? "-" : "+", xPos + 5, yPos + 5,
+                    selected ? CompassPalette.ACCENT : CompassPalette.TEXT);
+        }
+        int textLeft = xPos + (entry.getVariantId() != null ? 16 : 8);
         int textLimit = entryRight - 6 - textLeft;
         this.mc.fontRenderer.drawString(entry.getDisplayName(), textLeft, yPos + 5,
                 selected ? CompassPalette.ACCENT : CompassPalette.TEXT);

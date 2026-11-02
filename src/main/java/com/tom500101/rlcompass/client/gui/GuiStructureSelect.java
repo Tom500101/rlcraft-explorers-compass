@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import net.minecraft.client.audio.PositionedSoundRecord;
 import net.minecraft.client.gui.Gui;
@@ -13,6 +15,8 @@ import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.resources.I18n;
 import net.minecraft.init.SoundEvents;
 
+import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
+import com.tom500101.rlcompass.locate.StructureVariant;
 import com.tom500101.rlcompass.network.PacketHandler;
 import com.tom500101.rlcompass.network.PacketSearchRequest;
 
@@ -39,6 +43,8 @@ public class GuiStructureSelect extends GuiScreen {
     private static final int PANEL_GAP = 14;
 
     private final List<StructureSearchEntry> allEntries = new ArrayList<StructureSearchEntry>();
+    private final List<String> baseIds = new ArrayList<String>();
+    private final Set<String> expandedParents = new HashSet<String>();
 
     private TransparentButton searchButton;
     private TransparentButton sortButton;
@@ -50,13 +56,19 @@ public class GuiStructureSelect extends GuiScreen {
     private String lastFilter = "";
 
     public GuiStructureSelect(List<String> structureIds) {
-        List<String> ids = structureIds == null
-                ? Collections.<String>emptyList()
-                : new ArrayList<String>(structureIds);
+        if (structureIds != null) {
+            baseIds.addAll(structureIds);
+        }
         // Deterministic base order; the active SortMode decides the final ordering.
-        Collections.sort(ids);
-        for (String id : ids) {
-            allEntries.add(new StructureSearchEntry(id));
+        Collections.sort(baseIds);
+    }
+
+    /** Rebuilds parent rows (and their variant lists) from the ids the server sent. */
+    private void rebuildEntries() {
+        allEntries.clear();
+        for (String id : baseIds) {
+            List<StructureVariant> variants = StructureLocatorRegistry.get().getVariants(mc.world, id);
+            allEntries.add(new StructureSearchEntry(id, variants, expandedParents.contains(id)));
         }
     }
 
@@ -80,6 +92,7 @@ public class GuiStructureSelect extends GuiScreen {
         searchBox.setText(lastFilter);
 
         selectionList = new StructureSearchList(this, mc, 0, 1, 0, 1, SLOT_HEIGHT);
+        rebuildEntries();
 
         layoutControls();
         refreshEntries(false);
@@ -130,8 +143,10 @@ public class GuiStructureSelect extends GuiScreen {
     @Override
     protected void actionPerformed(GuiButton button) throws IOException {
         if (button.id == SEARCH_BUTTON_ID) {
-            if (selectionList.hasSelection()) {
-                searchFor(selectionList.getSelected().getStructureId());
+            StructureSearchEntry selected = selectionList.getSelected();
+            if (selected != null) {
+                // Parent + variant, never the composed variant id: the registry routes on the parent.
+                searchFor(selected.getParentId(), selected.getVariantId());
             }
         } else if (button.id == SORT_BUTTON_ID) {
             sortMode = sortMode.next();
@@ -179,6 +194,9 @@ public class GuiStructureSelect extends GuiScreen {
         // The @mod filter syntax does not fit in the header next to the box, so it lives here.
         fontRenderer.drawString(I18n.format("gui.rlcompass.hint"), sidePanelLeft + 12, listTop + 100,
                 CompassPalette.MUTED_TEXT);
+        // Variants marked ≈ are labels, not filters: the mod rolls the theme while generating.
+        fontRenderer.drawString(I18n.format("gui.rlcompass.hint.variant"), sidePanelLeft + 12,
+                listTop + 112, CompassPalette.MUTED_TEXT);
         fontRenderer.drawString(I18n.format("gui.rlcompass.catalog"), listLeft + 12, listTop + 12,
                 CompassPalette.ACCENT);
         fontRenderer.drawString(
@@ -207,15 +225,139 @@ public class GuiStructureSelect extends GuiScreen {
         return false;
     }
 
-    /** Sends the search request for {@code structureId} and closes the picker. */
+    /** Sends the search request for a plain structure id and closes the picker. */
     void searchFor(String structureId) {
-        if (structureId == null || structureId.isEmpty()) {
+        searchFor(new StructureSearchEntry(structureId));
+    }
+
+    /** Sends the search request for a row (parent or variant) and closes the picker. */
+    void searchFor(StructureSearchEntry entry) {
+        if (entry == null) {
+            return;
+        }
+        searchFor(entry.getParentId(), entry.getVariantId());
+    }
+
+    /**
+     * Sends parent + variant explicitly. The Search button and the double-click path both come
+     * here, so a variant row can never leak its composed id into the packet.
+     */
+    void searchFor(String parentId, String variantId) {
+        if (parentId == null || parentId.isEmpty()) {
             return;
         }
         mc.getSoundHandler().playSound(
                 PositionedSoundRecord.getMasterRecord(SoundEvents.UI_BUTTON_CLICK, 1.0F));
-        PacketHandler.channel().sendToServer(new PacketSearchRequest(structureId));
+        PacketHandler.channel().sendToServer(new PacketSearchRequest(parentId, variantId));
         mc.displayGuiScreen(null);
+    }
+
+    /** Expands or collapses a parent row's variant list. */
+    void toggleExpansion(StructureSearchEntry entry) {
+        if (entry == null || !entry.isExpandable()) {
+            return;
+        }
+        String id = entry.getStructureId();
+        if (expandedParents.remove(id)) {
+            entry.setExpanded(false);
+        } else {
+            expandedParents.add(id);
+            entry.setExpanded(true);
+        }
+        refreshEntries(true);
+    }
+
+    /**
+     * Test hook for the client smoke test ({@code rlcompass.clienttest=gui}); returns one
+     * PASS/FAIL line per check, without the {@code [CLIENTTEST]} prefix. Only called while the
+     * property is set, so the normal path is untouched.
+     */
+    public List<String> runClientTestSelfCheck() {
+        List<String> out = new ArrayList<String>();
+        if (selectionList == null || searchBox == null) {
+            out.add("FAIL gui.init expected=initialised actual=null");
+            return out;
+        }
+        out.add(result("gui.entries", 4, allEntries.size()));
+        checkFilter(out, "", 4);
+        checkFilter(out, "@minecraft", 2);
+        checkFilter(out, "village", 1);
+        checkFilter(out, "zzz", 0);
+        searchBox.setText("");
+        lastFilter = "";
+        refreshEntries(false);
+
+        sortMode = SortMode.NAME;
+        refreshEntries(false);
+        out.add(result("gui.sort.name", true, isSortedByName()));
+        sortMode = SortMode.SOURCE;
+        refreshEntries(false);
+        out.add(result("gui.sort.source", true, isSortedBySource()));
+        sortMode = SortMode.NAME;
+        refreshEntries(false);
+        return out;
+    }
+
+    /**
+     * Test hook: double-clicks the first row, which sends the search request and closes the screen.
+     * Returns the id that was requested, or null when the list is empty.
+     */
+    public String simulateSearchFirstRow() {
+        if (selectionList == null || selectionList.getEntryCount() == 0) {
+            return null;
+        }
+        String id = selectionList.getEntryId(0);
+        selectionList.simulateDoubleClick(0);
+        return id;
+    }
+
+    private void checkFilter(List<String> out, String filter, int expected) {
+        searchBox.setText(filter);
+        lastFilter = filter;
+        refreshEntries(false);
+        out.add(result("gui.filter[" + filter + "]", expected, selectionList.getEntryCount()));
+    }
+
+    private boolean isSortedByName() {
+        for (int i = 1; i < selectionList.getEntryCount(); i++) {
+            String previous = selectionList.getEntryDisplayName(i - 1);
+            String current = selectionList.getEntryDisplayName(i);
+            if (previous.compareToIgnoreCase(current) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isSortedBySource() {
+        for (int i = 1; i < selectionList.getEntryCount(); i++) {
+            StructureSearchEntry previous = selectionList.getEntry(i - 1);
+            StructureSearchEntry current = selectionList.getEntry(i);
+            if (previous == null || current == null) {
+                return false;
+            }
+            int bySource = previous.getSource().compareToIgnoreCase(current.getSource());
+            if (bySource > 0) {
+                return false;
+            }
+            if (bySource == 0
+                    && previous.getDisplayName().compareToIgnoreCase(current.getDisplayName()) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String result(String name, int expected, int actual) {
+        return expected == actual
+                ? "PASS " + name
+                : "FAIL " + name + " expected=" + expected + " actual=" + actual;
+    }
+
+    private static String result(String name, boolean expected, boolean actual) {
+        return expected == actual
+                ? "PASS " + name
+                : "FAIL " + name + " expected=" + expected + " actual=" + actual;
     }
 
     /** Called by the list after the selection changes. */
@@ -232,13 +374,36 @@ public class GuiStructureSelect extends GuiScreen {
                 : null;
 
         String filter = searchBox == null ? "" : searchBox.getText();
-        List<StructureSearchEntry> filtered = new ArrayList<StructureSearchEntry>();
+        List<StructureSearchEntry> visibleParents = new ArrayList<StructureSearchEntry>();
         for (StructureSearchEntry entry : allEntries) {
             if (entry.matches(filter)) {
-                filtered.add(entry);
+                visibleParents.add(entry);
             }
         }
-        Collections.sort(filtered, sortMode.comparator());
+        Collections.sort(visibleParents, sortMode.comparator());
+
+        // Children stay directly under their parent, so the flattened list must not be re-sorted
+        // globally after inserting them.
+        List<StructureSearchEntry> filtered = new ArrayList<StructureSearchEntry>();
+        for (StructureSearchEntry parent : visibleParents) {
+            filtered.add(parent);
+            if (!parent.isExpandable() || !parent.isExpanded()) {
+                continue;
+            }
+            List<StructureVariant> variants = new ArrayList<StructureVariant>(parent.getVariants());
+            Collections.sort(variants, new Comparator<StructureVariant>() {
+                @Override
+                public int compare(StructureVariant a, StructureVariant b) {
+                    return a.getDisplayName().compareToIgnoreCase(b.getDisplayName());
+                }
+            });
+            for (StructureVariant variant : variants) {
+                StructureSearchEntry child = new StructureSearchEntry(variant);
+                if (child.matches(filter)) {
+                    filtered.add(child);
+                }
+            }
+        }
         selectionList.setEntries(filtered, previous);
         updateButtonState();
     }

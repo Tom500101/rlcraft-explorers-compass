@@ -3,6 +3,7 @@ item.rlcompass.explorers_compass.name=Explorer's Compass
 gui.rlcompass.title=Explorer's Compass
 gui.rlcompass.subtitle=Locate structures near you
 gui.rlcompass.hint=Type to filter | @mod filters by source
+gui.rlcompass.hint.variant=≈ = theme is rolled at generation, not searchable
 gui.rlcompass.filter=Filter Results
 gui.rlcompass.actions=Actions
 gui.rlcompass.catalog=Structure Catalog
