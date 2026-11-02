@@ -29,10 +29,6 @@ public final class CompassConfig {
     })
     public static String[] structureBlacklist = new String[0];
 
-    @Config.Comment("Cache recorder scan frequency: examine one chunk out of every N. 1 scans every chunk.")
-    @Config.RangeInt(min = 1, max = 16)
-    public static int cacheScanInterval = 1;
-
     @Config.Comment({
             "Log a warning when a single locator takes longer than this many milliseconds.",
             "Set to 0 to disable the warning."

@@ -1,5 +1,7 @@
 package com.tom500101.rlcompass.cache;
 
+import java.util.List;
+
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -47,13 +49,22 @@ public final class CacheRecorder {
             return -1;
         }
         int dimension = world.provider.getDimension();
+        // P1: collect first. An empty source (e.g. RLTweaker's Consistent Tower Generation with no
+        // positions file) must not wipe a cache that a previous run already populated.
+        List<BlockPos> towers = new BattleTowersLocator().collectPositions(world);
+        List<BlockPos> ruins = new RuinsLocator().collectPositions(world);
+        if (towers.isEmpty() && ruins.isEmpty()) {
+            LOG.info("[CACHE] rebuild skipped for dimension {}: no positions from any source; "
+                    + "existing cache kept", dimension);
+            return 0;
+        }
         data.clearDimension(dimension);
         int written = 0;
-        for (BlockPos pos : new BattleTowersLocator().collectPositions(world)) {
+        for (BlockPos pos : towers) {
             data.record(dimension, BattleTowersLocator.STRUCTURE_ID, pos);
             written++;
         }
-        for (BlockPos pos : new RuinsLocator().collectPositions(world)) {
+        for (BlockPos pos : ruins) {
             data.record(dimension, RuinsLocator.STRUCTURE_ID, pos);
             written++;
         }

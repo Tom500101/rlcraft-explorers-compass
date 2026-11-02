@@ -3,8 +3,10 @@ package com.tom500101.rlcompass.locate.impl;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -12,9 +14,11 @@ import net.minecraft.world.World;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.tom500101.rlcompass.cache.BattleTowersPositionsFile;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.util.Reflect;
+import com.tom500101.rlcompass.util.StructureNameUtil;
 
 /**
  * Locates Battle Towers from the positions the mod already keeps in memory.
@@ -30,6 +34,10 @@ import com.tom500101.rlcompass.util.Reflect;
  *   └─ WorldHandle.towerPositions : ArrayList&lt;TowerPosition&gt;
  *        └─ TowerPosition { int x, y, z, type; boolean underground }
  * </pre>
+ *
+ * <p>Another mod can replace the generator and suppress the load hook that fills that map
+ * (RLTweaker's {@code Consistent Tower Generation} does exactly this). The positions file on disk is
+ * then the only surviving record, so {@link BattleTowersPositionsFile} is read as a second source.
  */
 public class BattleTowersLocator implements IStructureLocator {
 
@@ -40,9 +48,61 @@ public class BattleTowersLocator implements IStructureLocator {
 
     private boolean warnedMissing;
 
+    /** P0: logged once, because canAnswer runs on every picker open, search and tab completion. */
+    private static boolean warnedNoData;
+    private static boolean warnedReflection;
+
     @Override
     public Collection<String> getSupportedIds() {
         return Collections.singletonList(STRUCTURE_ID);
+    }
+
+    /**
+     * P0: Battle Towers only answers when its own {@code worldMap} holds a handle for this
+     * dimension. RLTweaker's {@code Consistent Tower Generation} bypasses both the load hook that
+     * imports {@code BattletowerPositionsFile.txt} and the generator path that appends new towers,
+     * so the map stays empty forever and every search would return {@code null}.
+     */
+    @Override
+    public boolean canAnswer(World world, String id) {
+        return STRUCTURE_ID.equals(StructureNameUtil.canonical(id)) && canAnswer(world);
+    }
+
+    @Override
+    public boolean canAnswer(World world) {
+        if (world == null) {
+            return true;
+        }
+        Class<?> handler = Reflect.findClass(HANDLER_CLASS);
+        boolean reflectionOk = false;
+        if (handler != null) {
+            Object rawMap = Reflect.readStatic(handler, "worldMap");
+            if (rawMap instanceof Map) {
+                reflectionOk = true;
+                if (((Map<?, ?>) rawMap).get(world.provider.getDimension()) != null) {
+                    return true;
+                }
+            }
+        }
+        // P1: the save may still hold a positions file even though the in-memory map is empty.
+        if (!BattleTowersPositionsFile.read(world).isEmpty()) {
+            return true;
+        }
+        if (handler == null) {
+            return false;
+        }
+        if (!reflectionOk && !warnedReflection) {
+            warnedReflection = true;
+            LOG.info("[BT] reflection failed on WorldGenHandler.worldMap — "
+                    + "BattleTowers may have changed; locator disabled");
+        }
+        if (!warnedNoData) {
+            warnedNoData = true;
+            LOG.info("[BT] no position data for dimension {} — another mod may have replaced "
+                            + "BattleTowers generation (e.g. RLTweaker Consistent Tower Generation)",
+                    world.provider.getDimension());
+        }
+        return false;
     }
 
     @Override
@@ -52,13 +112,39 @@ public class BattleTowersLocator implements IStructureLocator {
 
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
-        return StructureResult.nearestOf(STRUCTURE_ID, collectPositions(world), playerPos, radius, sourceName());
+        List<BlockPos> live = collectFromWorldMap(world);
+        List<BlockPos> file = BattleTowersPositionsFile.read(world);
+        String source;
+        if (live.isEmpty()) {
+            source = file.isEmpty() ? sourceName() : "BattleTowersFile";
+        } else {
+            source = file.isEmpty() ? sourceName() : sourceName() + "+BattleTowersFile";
+        }
+        return StructureResult.nearestOf(STRUCTURE_ID, merge(live, file), playerPos, radius, source);
     }
 
     /**
-     * Every tower the mod knows about in {@code world}'s dimension. Also used by the cache recorder.
+     * Every tower known in {@code world}'s dimension: the live map plus the on-disk positions file.
+     * Also used by the cache recorder, so the cache sees the file fallback too.
      */
     public List<BlockPos> collectPositions(World world) {
+        return merge(collectFromWorldMap(world), BattleTowersPositionsFile.read(world));
+    }
+
+    private static List<BlockPos> merge(List<BlockPos> live, List<BlockPos> file) {
+        if (file.isEmpty()) {
+            return live;
+        }
+        if (live.isEmpty()) {
+            return file;
+        }
+        Set<BlockPos> merged = new LinkedHashSet<BlockPos>(live);
+        merged.addAll(file);
+        return new ArrayList<BlockPos>(merged);
+    }
+
+    /** Towers BattleTowers itself records in {@code WorldGenHandler.worldMap}. */
+    private List<BlockPos> collectFromWorldMap(World world) {
         List<BlockPos> out = new ArrayList<BlockPos>();
         Class<?> handler = Reflect.findClass(HANDLER_CLASS);
         if (handler == null) {
