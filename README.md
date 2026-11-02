@@ -15,9 +15,9 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 | 作者 | tom500101 |
 | Minecraft | 1.12.2 |
 | Forge | 14.23.5.x |
-| 开发模板 | [CleanroomMC TemplateDevEnv](https://github.com/CleanroomMC/TemplateDevEnv) for Kotlin |
-| Gradle / RFG | Gradle 9.2.1 + [RetroFuturaGradle](https://github.com/GTNewHorizons/RetroFuturaGradle) 2.0.2 |
-| 语言 | Kotlin 2.3.0（Forgelin-Continuous 2.3.0.0） |
+| 开发模板 | [CleanroomMC TemplateDevEnv](https://github.com/CleanroomMC/TemplateDevEnv)（Kotlin 版；模板自带的 Kotlin JVM 插件与 Forgelin-Continuous 依赖已移除，项目为纯 Java） |
+| Gradle / RFG | Gradle 9.2.1 + [RetroFuturaGradle](https://github.com/GTNewHorizons/RetroFuturaGradle) 2.0.6 |
+| 语言 | Java 8（38 个 `.java` 源文件；构建脚本 `build.gradle.kts` 为 Kotlin DSL，模板默认携带的 Kotlin JVM 插件与 Forgelin-Continuous 依赖均已移除，源码纯 Java） |
 | 目标环境 | RLCraft 及其衍生整合包 |
 
 ## 核心设计
@@ -25,7 +25,7 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 指南针不依赖单一搜索方法，而是采用**分层定位策略**，为不同生成机制的模组提供各自的适配器：
 
 1. **标准 `MapGenStructure` 适配器**
-   通过反射从 `ChunkProviderOverworld` 提取生成器实例，调用其定位逻辑。
+   通过反射从 `ChunkGeneratorOverworld` 提取生成器实例，调用其定位逻辑。
    覆盖 Better Mineshafts 等替换原版生成器的模组，以及 Roguelike Dungeons
    这类内部持有 `MapGenStructure` 的模组（需反射其内部字段）。
 
@@ -51,9 +51,8 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 | Antique Cities | **不生成结构**：Antique Atlas 的地图标记插件 | 无需适配 | 不适用 |
 | Doomlike Dungeons | `IWorldGenerator`；`isDungeonCenter` 判定函数 | `DoomlikeLocator` 螺旋判定 | 已实现（实测 539 格 / 3 ms） |
 | Ruins | `IWorldGenerator`，无 `MapGenStructure`；自带位置文件 | `RuinsLocator` 读位置文件（包围盒中心） | 已实现 |
-| Battle Towers | `IWorldGenerator`；自带内存坐标表 | `BattleTowersLocator` 读 `WorldGenHandler.worldMap` | 已实现 |
-| Doomlike Dungeons | `IWorldGenerator`；`isDungeonCenter` 判定函数 | `DoomlikeLocator` 螺旋判定 | 已实现（实测 539 格 / 3 ms） |
-| Recurrent Complex | 包装原生生成器；自有结构记录在 `WorldStructureGenerationData` | `RecurrentComplexLocator` | 已实现（待运行验证） |
+| Battle Towers | `IWorldGenerator`；自带内存坐标表 + 位置文件 | `BattleTowersLocator` 读 `WorldGenHandler.worldMap`；为空时回退读存档里的 `BattletowerPositionsFile.txt`（应对 RLTweaker Consistent 模式） | 已实现 |
+| Recurrent Complex | 包装原生生成器；自有结构记录在 `WorldStructureGenerationData` | `RecurrentComplexLocator` | 已实现（实测 `(220,84,265)` / 3 ms） |
 | Lost Cities | 替换 `IChunkGenerator`，维度 111 | `LostCitiesLocator` 用 `ILostChunkGenerator.getChunkInfo` 螺旋搜索 | 已实现（实测 `(152,64,296)` / 77 ms） |
 
 状态列来自 [`docs/probe-result.md`](docs/probe-result.md)（阶段 1 在真实 RLCraft 模组集下的实测）。
@@ -67,19 +66,19 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 - [x] 本地模组依赖接入（`libs/` + `rfg.deobf`，10 个 jar 全部加载）
 - [x] 替换模板残留：`mcmod.info` / `pack.mcmeta` 已改为 rlcompass，源码包改为 `com.tom500101.rlcompass`
 - [x] 结构探测器：打印 RLCraft 环境下可获取的 `MapGenStructure` 实例 → `docs/probe-result.md`
-- [x] `IStructureLocator` / `StructureLocatorRegistry` / `StructureResult` 框架
-- [x] 网络通道（`SimpleNetworkWrapper` + `PacketStructureResult`）
+- [x] `IStructureLocator` / `StructureLocatorRegistry`（`MapGenLocatorRegistrar` / `ModLocatorRegistrar`）/ `StructureResult` 框架
+- [x] 网络通道（`SimpleNetworkWrapper` + 3 个数据包：`PacketStructureResult` / `PacketOpenCompassGui`（服务端→客户端）、`PacketSearchRequest`（客户端→服务端））
 - [x] 配置文件（搜索半径、结构黑名单、缓存频率、慢适配器告警、精确坐标开关）
 - [x] 生成时缓存适配器 `StructureCacheData`（WorldSavedData）+ `/rlcompass rebuildcache`，
       已验证重启后从磁盘读回 16 条记录
 - [x] 标准 `MapGenStructure` 适配器（6 个原版结构 + Better Mineshafts，自测总耗时 221 ms）
 - [x] Battle Towers / Ruins 适配器（读模组自有数据，命中率 100%，无特征方块检测）
-- [ ] Recurrent Complex / Lost Cities 专项适配
+- [x] Recurrent Complex / Lost Cities 专项适配（`RecurrentComplexLocator` 反射 `WorldStructureGenerationData`；`LostCitiesLocator` 走 `ILostChunkGenerator.getChunkInfo` 螺旋搜索；集成测试确认两者均可定位）
 - [x] 指南针物品 `explorers_compass`（`RegistryEvent.Register<Item>` 注册，模型 + 语言文件已打包）
 - [x] 搜索链路 `ItemExplorersCompass.search()` → `PacketStructureResult` → 客户端状态
 - [x] 选择 GUI `GuiStructureSelect` + HUD `CompassHudRenderer`（文本 + 箭头）
-- [x] 配置文件（搜索半径、结构黑名单、缓存频率、慢适配器告警、精确坐标开关）
-- [ ] 实机视觉确认（创造栏图标、GUI 布局、HUD 箭头朝向）
+- [ ] 实机视觉确认（创造栏图标、GUI 布局、HUD 箭头朝向）——半自动冒烟测试用 `./gradlew runClient -Pclienttest=<mode>`（手工启动时用 `-Drlcompass.clienttest=<mode>` 兜底）；完整清单见 [`docs/runtime-verification.md`](docs/runtime-verification.md)
+  - 已实机验证：hud 6/6、gui 9/9、registry 8/8；arrow/state/angle 3/3；`all` **32/32 PASS**；`search` **4/4 PASS**——所有 clienttest mode 已实机验证，运行期验证闭环。人工视觉确认（HUD 箭头朝向、GUI 布局、创造栏图标等）仍需按文档第 5 节人眼确认。详见上述文档的「实机验证状态」列。
 
 集成测试结果见 [`docs/integration-test.md`](docs/integration-test.md)：
 计划书阶段 8 的 8 项验收**全部通过**。可用结构 ID 共 **12 个**，单次搜索最慢 151 ms。
@@ -100,6 +99,8 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 > **foojay-resolver 插件已被移除**：它所有已发布版本（0.4.0 … 1.0.0）都引用了
 > `JvmVendorSpec.IBM_SEMERU`，而该字段在 Gradle 9 中已删除，插件一加载就中断构建。
 > 因此 toolchain 改为只从本地已安装的 JDK 解析，详见 `settings.gradle.kts` 中的注释。
+
+> 构建与网络环境的排障历史（JDK 25 / 代理 / 镜像等）见 [`docs/environment-diagnosis.md`](docs/environment-diagnosis.md)。
 
 ### 初始化
 
@@ -131,13 +132,13 @@ if (!libsFileTree.isEmpty) {
 }
 ```
 
-`libs/` 中放的是第三方模组 jar，仅作本地编译依赖，不应提交到仓库
-（目前 `.gitignore` 还未包含该目录）。
+`libs/` 中放的是第三方模组 jar，仅作本地编译依赖，已被 `.gitignore` 排除
+（`libs/` 与本地工具链 `.tools/` 均不入库），无需手动清理。
 
 ### 运行
 
 Gradle 面板中执行 `Tasks > forgegradle runs > runClient`，
-或直接使用 IDEA 运行配置 `1. Run Client`（另有 `2. Run Server` 等）。
+或直接使用 IDEA 运行配置 `1. Run Client` / `2. Run Server` / `3. Run Obfuscated Client` / `4. Run Obfuscated Server`。
 
 ## 获取指南针
 
@@ -197,7 +198,6 @@ Gradle 面板中执行 `Tasks > forgegradle runs > runClient`，
 | --- | --- | --- |
 | `searchRadius` | `10000` | 最大搜索半径（格），区间 100–100000 |
 | `structureBlacklist` | 空 | 按结构 ID 禁用搜索，如 `minecraft:village` |
-| `cacheScanInterval` | `1` | 缓存扫描频率：每 N 个区块检查 1 个 |
 | `slowLocatorWarnMs` | `500` | 单个适配器超时多久打告警日志 |
 | `showExactCoordinates` | `true` | HUD 显示精确坐标；关闭后只显示距离与方向 |
 
