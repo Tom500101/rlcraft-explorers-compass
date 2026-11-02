@@ -22,14 +22,6 @@ pluginManagement {
 // Toolchains are therefore resolved from local JDK installations only — JDK 8 is declared
 // through org.gradle.java.installations.paths in gradle.properties.
 
-dependencyResolutionManagement { 
-    versionCatalogs { 
-        create("libs") {
-            version("kotlinVersion", settings.extra.properties["kotlin_version"].toString())
-        }
-    }
-}
-
 // Due to an IntelliJ bug, this has to be done
 // rootProject.name = archives_base_name
 rootProject.name = rootProject.projectDir.getName()

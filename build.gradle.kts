@@ -3,20 +3,9 @@ import org.jetbrains.gradle.ext.compiler
 import org.jetbrains.gradle.ext.runConfigurations
 import org.jetbrains.gradle.ext.settings
 
-buildscript { 
-    repositories {
-        mavenCentral()
-    }
-    
-    dependencies {
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${libs.versions.kotlinVersion.get()}")
-    }
-}
-
 plugins {
     id("java")
     id("java-library")
-    kotlin("jvm") version libs.versions.kotlinVersion
     id("maven-publish")
     id("org.jetbrains.gradle.plugin.idea-ext") version "1.1.7"
     id("eclipse")
@@ -32,9 +21,6 @@ val maven_group: String by project
 val mod_id: String by project
 @Suppress("PropertyName")
 val archives_base_name: String by project
-
-@Suppress("PropertyName")
-val forgelin_continuous_version: String by project
 
 @Suppress("PropertyName")
 val use_access_transformer: String by project
@@ -131,11 +117,8 @@ tasks.injectTags.configure {
 //    an explicit or implicit dependency"
 // Declare every producer -> consumer pair up front.
 listOf(
-    "compileInjectedTagsKotlin" to "injectTags",
     "compileInjectedTagsJava" to "injectTags",
-    "compilePatchedMcKotlin" to "decompressDecompiledSources",
     "compilePatchedMcJava" to "decompressDecompiledSources",
-    "compileMcLauncherKotlin" to "createMcLauncherFiles",
     "compileMcLauncherJava" to "createMcLauncherFiles",
 ).forEach { (consumer, producer) ->
     tasks.matching { it.name == consumer }.configureEach { dependsOn(producer) }
@@ -161,10 +144,6 @@ repositories {
 }
 
 dependencies {
-    implementation("io.github.chaosunity.forgelin:Forgelin-Continuous:${forgelin_continuous_version}") {
-        exclude("net.minecraftforge")
-    }
-    
     if (use_assetmover.toBoolean()) {
         implementation("com.cleanroommc:assetmover:2.5")
     }
