@@ -137,6 +137,14 @@ public class RLCompassMod {
         }
     }
 
+    /** Drops the memoised Recurrent Complex list so a reloaded world is read again. */
+    @SubscribeEvent
+    public void onWorldUnload(WorldEvent.Unload event) {
+        if (event.getWorld() != null && !event.getWorld().isRemote) {
+            RecurrentComplexData.invalidate();
+        }
+    }
+
     @SubscribeEvent
     public void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END || delayedSelfTestCountdown < 0) {
