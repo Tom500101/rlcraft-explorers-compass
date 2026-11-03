@@ -29,7 +29,6 @@ public final class StructureNameUtil {
         DISPLAY_NAME.put("rlcompass:battletower", "Battle Tower");
         DISPLAY_NAME.put("rlcompass:ruin", "Ruin");
         DISPLAY_NAME.put("reccomplex:structure", "Recurrent Complex Structure");
-        DISPLAY_NAME.put("lostcities:city", "Lost City");
         DISPLAY_NAME.put("roguelike:dungeon", "Roguelike Dungeon");
         DISPLAY_NAME.put("doomlike:dungeon", "Doomlike Dungeon");
     }

@@ -6,7 +6,6 @@ import org.apache.logging.log4j.Logger;
 import com.tom500101.rlcompass.locate.impl.BattleTowersLocator;
 import com.tom500101.rlcompass.locate.impl.CacheLocator;
 import com.tom500101.rlcompass.locate.impl.DoomlikeLocator;
-import com.tom500101.rlcompass.locate.impl.LostCitiesLocator;
 import com.tom500101.rlcompass.locate.impl.RecurrentComplexLocator;
 import com.tom500101.rlcompass.locate.impl.RoguelikeLocator;
 import com.tom500101.rlcompass.locate.impl.RuinsLocator;
@@ -27,7 +26,6 @@ public final class ModLocatorRegistrar {
         registry.register(new BattleTowersLocator());
         registry.register(new RuinsLocator());
         registry.register(new RecurrentComplexLocator());
-        registry.register(new LostCitiesLocator());
         registry.register(new RoguelikeLocator());
         registry.register(new DoomlikeLocator());
         // Lower priority: a mirror of the above, used when a mod has not finished loading its own

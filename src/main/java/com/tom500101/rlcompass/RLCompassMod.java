@@ -73,9 +73,6 @@ public class RLCompassMod {
     /** Ticks to wait before re-running the self-test (20 ticks = 1 second). */
     private static final int SELFTEST_DELAY_TICKS = 600;
 
-    /** Dimension id used by The Lost Cities, confirmed from the probe logs. */
-    private static final int LOST_CITIES_DIMENSION = 111;
-
     private static final Logger LOG = LogManager.getLogger(MODID);
 
     private int delayedSelfTestCountdown = -1;
@@ -122,12 +119,6 @@ public class RLCompassMod {
         if (Boolean.getBoolean(SELFTEST_PROPERTY)) {
             LOG.info("[SELFTEST] immediate pass");
             runSelfTest(overworld);
-            // Lost Cities lives in its own dimension; the overworld pass can never reach it.
-            WorldServer lostCities = server.getWorld(LOST_CITIES_DIMENSION);
-            if (lostCities != null) {
-                LOG.info("[SELFTEST] dimension {} pass (Lost Cities)", LOST_CITIES_DIMENSION);
-                runSelfTest(lostCities);
-            }
             delayedSelfTestCountdown = SELFTEST_DELAY_TICKS;
         }
     }

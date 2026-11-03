@@ -25,7 +25,6 @@
 | 结构 ID | 结果 | 距离 | 耗时 | 适配器 |
 |---|---|---|---|---|
 | `doomlike:dungeon` | `(520, 64, 712)` | 539 | 3 ms | Doomlike |
-| `lostcities:city` | 需维度 111 | — | — | LostCities |
 | `minecraft:mansion` | `null`（超半径） | 20641 | 161 ms | MapGen |
 | `minecraft:mineshaft` | `(1464, 64, 2056)` | 2181 | 14 ms | MapGen |
 | `minecraft:monument` | `(2312, 64, 1336)` | 2351 | 13 ms | MapGen |
@@ -37,9 +36,7 @@
 | `rlcompass:ruin` | `(172, 69, 184)` | 93 | 2 ms | Ruins |
 | `roguelike:dungeon` | `(8, 64, 488)` | 308 | 2 ms | Roguelike |
 
-维度 111（Lost Cities）：`lostcities:city` → `(152, 64, 296)`，75 格，74 ms。
-
-**十二个 ID 全部产出预期结果，无异常，最慢单项 151 ms。**
+**十一个 ID 全部产出预期结果，无异常，最慢单项 151 ms。**
 
 ## 3. 客户端验证
 

@@ -1,6 +1,6 @@
 # HANDOFF — 结构适配器状态
 
-> 最后更新：2026-11-02
+> 最后更新：2026-11-03
 > 列定义：**实现** = 代码存在且在 `StructureLocatorRegistry` 中注册；**自动验证** = 集成测试 / clienttest / 日志中有可复现的调用记录；**人工确认** = 有人进游戏目视确认过结果真实存在。
 
 ## 1. 适配器总表
@@ -16,10 +16,11 @@
 | `rlcompass:battletower` | `BattleTowersLocator` | 是 | 是 | **已确认**（2026-11-02） | 无数据时列表隐藏 + `find` 回 `is not available`；放置 `BattletowerPositionsFile.txt` 后命中 `(200,64,200)` 7224 格 / 1 ms `via BattleTowersFile` |
 | `rlcompass:ruin` | `RuinsLocator` | 是 | 是 | 未做 | `(172,69,184)` 93 格 / 2 ms |
 | `reccomplex:structure` | `RecurrentComplexLocator` | 是 | 是 | 未做 | `(220,84,265)` 1 格 / 3 ms |
-| `lostcities:city` | `LostCitiesLocator` | 是 | 是 | 未做 | 维度 111 `(152,64,296)` 75 格 / 74 ms |
 | `roguelike:dungeon` | `RoguelikeLocator` | 是 | 是 | **已确认**（2026-11-02） | 见 §2 |
 | `doomlike:dungeon` | `DoomlikeLocator` | 是 | 是 | 未做 | `(520,64,712)` 539 格 / 3 ms；变种搜索 `(5272,64,5400)` 105 格 / 9 ms 标 `unconfirmed` |
 | `rlcompass:battletower`、`rlcompass:ruin` | `CacheLocator`（镜像） | 是 | 间接 | 未做 | 缓存重建/持久化验证过，但日志中 `via Cache` 命中 0 次（优先级最低，活适配器正常时轮不到它） |
+
+> 2026-11-03：`lostcities:city` 已移除。Lost Cities 是**独立维度**（id 111），指南针的语义是「在同一维度里找结构」，把一个维度当作可搜索结果既不符合直觉，也让「最近」失去意义。
 
 ## 2. Roguelike 人工确认记录（2026-11-02）
 
@@ -83,13 +84,15 @@
 - **候选枚举改网格**：`canSpawnInChunk` 只接受 `chunkX % 51 == 0 && chunkZ % 51 == 0`，沿 ring 遍历等于拿 20 万次哈希换约 600 个真候选（实测 2.3 s）。现在反射 `Dungeon.getSpawnFrequency()`，直接枚举网格点并按距离排序，去掉无效遍历。
 - **删掉 chunk 中心主题预筛**：预筛用 chunk 中心的生物群系猜主题，而原点可偏移 408 格。
   实例：一座真实的 Ocean Temple 在 `(3110, 5821)`，其 origin chunk 中心在约 190 格外、生物群系不同，预筛直接把整座地牢丢掉 → 变种搜索「无命中」。
-  现在改为对每个候选直接重放原点，再用原点坐标确认主题；变种搜索按最近 40 个网格 chunk 为上限（约 2000 格半径）。
+  现在改为对每个候选直接重放原点，再用原点坐标确认主题。
+  **2026-11-03 更新**：去掉「最近 40 个候选」的上限，改为覆盖整个半径。为控制成本加了 5 点 biome 预筛
+  （chunk 中心 + 四角内缩 5 格，只读 `getBiome`、不加载区块），以及 30 秒墙钟预算，超时返回未找到并打 WARN。
 - **不再调用 `selectLocation`，改为自己遍历 10 个候选点**：`Dungeon.selectLocation` 只返回**第一个通过地形校验**的点，而该校验读取的邻居区块在 population 阶段可能还没成型。
   在「已完成的世界」上重放，它会停在某个从未建塔的 attempt 上——`(4980, 7137)` 就是这么来的（重放通过，存档只有 40 块苔石）。
   现在 `originFor` 用 Forge 的 chunk random 自己算出全部 `spawnAttempts`（=10）个点，逐个做方块指纹，取第一个真正有地牢的。
   实测 chunk `(204, 357)`：attempt 0/1 指纹 0，attempt 2 指纹 1183 且坐标 `(3110, 5821)`，与玩家 tp 看到的塔一致。
 - **方块指纹两级检查**：核心区 `±2` 格、`y=46..62` 先要 ≥8；通过后再查 `±4` 格、`y=42..70`，≥24 才算数。
-  方块集合：石砖/圆石/苔石/海晶石/石英/铁栏杆/铁门/spawner/箱子/火把。空地只花 375 次读就放弃，避免 10 个 attempt × 2000 格的开销。
+  方块集合：石砖/圆石/苔石/海晶石/石英/铁栏杆/铁门/spawner/箱子/火把。空地只花 375 次读就放弃，避免 10 个 attempt × 2025 格的开销。
 - **验证工具的一个坑**（记录备查）：Python 复刻 Java `Random` 时 `next(32)` 必须按**有符号 int** 返回，否则 `nextLong()` 得负数后 `>> 3` 的结果与 Java 不同，会算出完全另一组候选点；mod 本身用的是真实 `java.util.Random`，不受影响。
 - 日志：`[ROGUELIKE] spawn grid every 51 chunks, 10 attempts per chunk, first air at y=100`；
   `[ROGUELIKE] N candidate chunks ... had no dungeon after replay + block check`。

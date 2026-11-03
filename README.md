@@ -35,7 +35,7 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
    `WorldSavedData`，搜索时直接查询缓存。
 
 3. **模组专项适配器**
-   对 Lost Cities、Recurrent Complex 等有自身定位 API 的模组，
+   对 Recurrent Complex 等有自身定位 API 的模组，
    优先调用其内部逻辑，无法调用时退回缓存方案。
 
 所有适配器统一实现 `IStructureLocator` 接口，指南针汇总各适配器的候选坐标，
@@ -53,7 +53,6 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 | Ruins | `IWorldGenerator`，无 `MapGenStructure`；自带位置文件 | `RuinsLocator` 读位置文件（包围盒中心） | 已实现 |
 | Battle Towers | `IWorldGenerator`；自带内存坐标表 + 位置文件 | `BattleTowersLocator` 读 `WorldGenHandler.worldMap`；为空时回退读存档里的 `BattletowerPositionsFile.txt`（应对 RLTweaker Consistent 模式） | 已实现 |
 | Recurrent Complex | 包装原生生成器；自有结构记录在 `WorldStructureGenerationData` | `RecurrentComplexLocator` | 已实现（实测 `(220,84,265)` / 3 ms） |
-| Lost Cities | 替换 `IChunkGenerator`，维度 111 | `LostCitiesLocator` 用 `ILostChunkGenerator.getChunkInfo` 螺旋搜索 | 已实现（实测 `(152,64,296)` / 77 ms） |
 
 状态列来自 [`docs/probe-result.md`](docs/probe-result.md)（阶段 1 在真实 RLCraft 模组集下的实测）。
 探测器结果推翻了计划书的两条假设：`ChunkProviderOverworld` 这个名字在 1.12.2 不存在（应为
@@ -73,7 +72,7 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
       已验证重启后从磁盘读回 16 条记录
 - [x] 标准 `MapGenStructure` 适配器（6 个原版结构 + Better Mineshafts，自测总耗时 221 ms）
 - [x] Battle Towers / Ruins 适配器（读模组自有数据，命中率 100%，无特征方块检测）
-- [x] Recurrent Complex / Lost Cities 专项适配（`RecurrentComplexLocator` 反射 `WorldStructureGenerationData`；`LostCitiesLocator` 走 `ILostChunkGenerator.getChunkInfo` 螺旋搜索；集成测试确认两者均可定位）
+- [x] Recurrent Complex 专项适配（`RecurrentComplexLocator` 反射 `WorldStructureGenerationData`；集成测试确认可定位）
 - [x] 指南针物品 `explorers_compass`（`RegistryEvent.Register<Item>` 注册，模型 + 语言文件已打包）
 - [x] 搜索链路 `ItemExplorersCompass.search()` → `PacketStructureResult` → 客户端状态
 - [x] 选择 GUI `GuiStructureSelect` + HUD `CompassHudRenderer`（文本 + 箭头）
@@ -81,7 +80,7 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
   - 已实机验证：hud 6/6、gui 9/9、registry 8/8；arrow/state/angle 3/3；`all` **32/32 PASS**；`search` **4/4 PASS**——所有 clienttest mode 已实机验证，运行期验证闭环。人工视觉确认（HUD 箭头朝向、GUI 布局、创造栏图标等）仍需按文档第 5 节人眼确认。详见上述文档的「实机验证状态」列。
 
 集成测试结果见 [`docs/integration-test.md`](docs/integration-test.md)：
-计划书阶段 8 的 8 项验收**全部通过**。可用结构 ID 共 **12 个**，单次搜索最慢 151 ms。
+计划书阶段 8 的 8 项验收**全部通过**。可用结构 ID 共 **11 个**，单次搜索最慢 151 ms。
 8 个结构模组里 7 个有适配器，Antique Cities 本身不生成结构（地图标记插件），无需适配。
 
 ## 开发环境
