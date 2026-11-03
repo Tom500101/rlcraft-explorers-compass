@@ -24,8 +24,8 @@ public class VillageLocator extends MapGenLocator {
 
     public static final String ID = "minecraft:village";
 
-    private static final int MAX_HOPS = 12;
-    private static final int HOP_DISTANCE = 64;
+    /** Salt {@code MapGenVillage.canSpawnStructureAtCoords} passes to setRandomSeed. */
+    private static final int SEED_CONSTANT = 10387312;
 
     public VillageLocator(String srgFieldName, String mcpFieldName) {
         super(srgFieldName, mcpFieldName, ID);
@@ -63,22 +63,11 @@ public class VillageLocator extends MapGenLocator {
         if (generator == null) {
             return null;
         }
-        double maxDistanceSq = (double) radius * (double) radius;
-        BlockPos from = playerPos;
-        for (int hop = 0; hop < MAX_HOPS; hop++) {
-            BlockPos found = generator.getNearestStructurePos(world, from, false);
-            if (found == null || StructureResult.horizontalDistanceSq(found, playerPos) > maxDistanceSq) {
-                return null;
+        List<BlockPos> candidates = enumerateCandidates(world, generator, playerPos, radius, SEED_CONSTANT);
+        for (BlockPos candidate : candidates) {
+            if (wanted.equals(typeAt(world, candidate))) {
+                return StructureResult.of(ID, candidate, sourceName(), playerPos);
             }
-            if (wanted.equals(typeAt(world, found))) {
-                return StructureResult.of(ID, found, sourceName(), playerPos);
-            }
-            int dx = Integer.signum(found.getX() - playerPos.getX());
-            int dz = Integer.signum(found.getZ() - playerPos.getZ());
-            if (dx == 0 && dz == 0) {
-                return null;
-            }
-            from = found.add(dx * HOP_DISTANCE, 0, dz * HOP_DISTANCE);
         }
         return null;
     }

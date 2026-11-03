@@ -1,8 +1,15 @@
 package com.tom500101.rlcompass.locate.impl;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -106,6 +113,156 @@ public class MapGenLocator implements IStructureLocator {
             return null;
         }
     }
+
+    /**
+     * Every structure the generator would place within {@code radius}, nearest first.
+     *
+     * <p>{@code getNearestStructurePos} cannot be used to walk outward: it derives the cell index
+     * from the start position and then snaps the candidate back onto the spacing grid
+     * ({@code cell * spacing + rand}), so any start point inside the same cell returns the same
+     * structure no matter how far it is nudged. The cell is {@code spacing} chunks wide — 512 blocks
+     * at the vanilla default — which is why the old 48-block hop loop never advanced.
+     *
+     * <p>So the grid is enumerated instead: for every cell covering the radius, reproduce the
+     * generator's own candidate ({@code setRandomSeed(cellX, cellZ, seed)} then two {@code nextInt}
+     * calls) and confirm it with {@code canSpawnStructureAtCoords}. Confirmation is what keeps this
+     * honest — if a mod changes the offsets or the spacing, the replay stops matching and yields
+     * nothing rather than a wrong coordinate.
+     *
+     * @param seedConstant per-generator salt: 14357617 for scattered features, 10387312 for villages
+     */
+    protected List<BlockPos> enumerateCandidates(World world, MapGenStructure generator,
+                                                 BlockPos playerPos, int radius, int seedConstant) {
+        Method canSpawn = canSpawnStructureAtCoords();
+        if (canSpawn == null) {
+            return Collections.emptyList();
+        }
+        int spacing = spacingChunks(generator);
+        int offsetRange = spacing - 8;
+        if (offsetRange <= 0) {
+            return Collections.emptyList();
+        }
+        int maxCells = Math.max(1, (radius >> 4) / spacing + 2);
+        int centerCellX = Math.floorDiv(playerPos.getX() >> 4, spacing);
+        int centerCellZ = Math.floorDiv(playerPos.getZ() >> 4, spacing);
+        double maxDistanceSq = (double) radius * (double) radius;
+
+        List<BlockPos> found = new ArrayList<BlockPos>();
+        for (int dx = -maxCells; dx <= maxCells; dx++) {
+            for (int dz = -maxCells; dz <= maxCells; dz++) {
+                int cellX = centerCellX + dx;
+                int cellZ = centerCellZ + dz;
+                Random random = world.setRandomSeed(cellX, cellZ, seedConstant);
+                int chunkX = cellX * spacing + random.nextInt(offsetRange);
+                int chunkZ = cellZ * spacing + random.nextInt(offsetRange);
+                if (!spawnsAt(generator, canSpawn, chunkX, chunkZ)) {
+                    continue;
+                }
+                BlockPos candidate = new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
+                if (StructureResult.horizontalDistanceSq(candidate, playerPos) > maxDistanceSq) {
+                    continue;
+                }
+                found.add(candidate);
+            }
+        }
+        Collections.sort(found, new Comparator<BlockPos>() {
+            @Override
+            public int compare(BlockPos a, BlockPos b) {
+                return Double.compare(StructureResult.horizontalDistanceSq(a, playerPos),
+                        StructureResult.horizontalDistanceSq(b, playerPos));
+            }
+        });
+        return found;
+    }
+
+    private static boolean spawnsAt(MapGenStructure generator, Method canSpawn, int chunkX, int chunkZ) {
+        try {
+            Object value = canSpawn.invoke(generator, Integer.valueOf(chunkX), Integer.valueOf(chunkZ));
+            return value instanceof Boolean && ((Boolean) value).booleanValue();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** The spacing between structure cells, in chunks. Falls back to the vanilla default. */
+    private static int spacingChunks(MapGenStructure generator) {
+        Class<?> type = generator.getClass();
+        synchronized (SPACING_CACHE) {
+            Integer cached = SPACING_CACHE.get(type);
+            if (cached != null) {
+                return cached.intValue();
+            }
+        }
+        int spacing = DEFAULT_SPACING;
+        for (String name : SPACING_FIELD_SRG) {
+            try {
+                Field field = ObfuscationReflectionHelper.findField(type, name);
+                Object value = field.get(generator);
+                if (value instanceof Number) {
+                    spacing = ((Number) value).intValue();
+                    break;
+                }
+            } catch (Throwable ignored) {
+                // Try the next name.
+            }
+        }
+        if (spacing == DEFAULT_SPACING) {
+            for (String name : SPACING_FIELD_MCP) {
+                try {
+                    Field field = type.getDeclaredField(name);
+                    field.setAccessible(true);
+                    Object value = field.get(generator);
+                    if (value instanceof Number) {
+                        spacing = ((Number) value).intValue();
+                        break;
+                    }
+                } catch (Throwable ignored) {
+                    // Try the next name.
+                }
+            }
+        }
+        if (spacing <= 8) {
+            spacing = DEFAULT_SPACING;
+        }
+        synchronized (SPACING_CACHE) {
+            SPACING_CACHE.put(type, Integer.valueOf(spacing));
+        }
+        return spacing;
+    }
+
+    private static Method canSpawnStructureAtCoords() {
+        synchronized (SPACING_CACHE) {
+            if (canSpawnResolved) {
+                return canSpawnMethod;
+            }
+            canSpawnResolved = true;
+        }
+        try {
+            Method method = ObfuscationReflectionHelper.findMethod(MapGenStructure.class,
+                    "func_75047_a", boolean.class, int.class, int.class);
+            method.setAccessible(true);
+            canSpawnMethod = method;
+        } catch (Throwable primary) {
+            try {
+                Method raw = MapGenStructure.class.getDeclaredMethod("canSpawnStructureAtCoords",
+                        int.class, int.class);
+                raw.setAccessible(true);
+                canSpawnMethod = raw;
+            } catch (Throwable secondary) {
+                LOG.error("[MAPGEN] cannot reach canSpawnStructureAtCoords; typed searches disabled",
+                        secondary);
+            }
+        }
+        return canSpawnMethod;
+    }
+
+    private static final Map<Class<?>, Integer> SPACING_CACHE = new HashMap<Class<?>, Integer>();
+    private static final String[] SPACING_FIELD_SRG = {"field_82669_g", "field_75054_f"};
+    private static final String[] SPACING_FIELD_MCP = {
+            "maxDistanceBetweenScatteredFeatures", "distance"};
+    private static final int DEFAULT_SPACING = 32;
+    private static Method canSpawnMethod;
+    private static boolean canSpawnResolved;
 
     private Field field() {
         if (cachedField != null) {

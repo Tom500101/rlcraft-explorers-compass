@@ -165,16 +165,28 @@
 
 ## 6. 原版结构变体（2026-11-03）
 
-- **`minecraft:temple` 三类**：`MapGenScatteredFeature.Start` 的构造器按 biome 分支——
-  `DESERT`/`DESERT_HILLS` → 沙漠神殿，`JUNGLE`/`JUNGLE_HILLS` → 丛林神庙，`SWAMPLAND` → 女巫小屋。
+- **`minecraft:temple` 四类**：`MapGenScatteredFeature.Start` 的构造器按 biome 分支——
+  `DESERT`/`DESERT_HILLS` → 沙漠神殿，`JUNGLE`/`JUNGLE_HILLS` → 丛林神庙，`SWAMPLAND` → 女巫小屋，
+  `ICE_PLAINS`/`COLD_TAIGA` → 雪屋（第一版漏了这一类）。
   生成时用的就是这个 biome，事后读同一个 biome 不可能判错，不需要重放随机或方块指纹。
 - **`minecraft:village` 五类**：村庄没有类型字段，`StructureVillagePieces.getBiomeSpecificBlockState`
   按 biome 替换建材，所以样式同样是 biome 的纯函数。按 biome 名归为
   plains / desert / savanna / taiga / snowy 五档，其余落到 plains（与原版一致）。
 - **实现**：`TempleLocator` / `VillageLocator` 继承 `MapGenLocator`，只覆写 `getVariants` 与五参 `findNearest`。
-  难点是 `getNearestStructurePos` 只返回**最近一个**结构：类型不符时必须继续往外找。
-  做法是从玩家出发，找到最近的结构后沿「玩家 → 该结构」方向再推 48 格（村庄 64 格）作为新的搜索原点，
-  重复最多 12 次；每次都用 `radius` 复核，越界即停。
+- **第一版的 hop 逻辑无效（2026-11-03 修正）**：`getNearestStructurePos` 会先把起点换算成
+  spacing 单元格再「吸附」回网格（`cell * spacing + rand`），同一格内怎么挪都返回同一个结构；
+  单元格宽 `spacing` 个 chunk（默认 32 = 512 格），所以「外推 48 / 64 格」永远跳不出去。
+  实测表现：在沙漠神殿里搜丛林神庙/女巫小屋，12 次 hop 全部命中同一座，`0 ms` 返回空。
+- **正解**：`MapGenLocator.enumerateCandidates` 直接枚举单元格——对每个 cell 复刻生成器的候选
+  （`world.setRandomSeed(cellX, cellZ, salt)` + 两次 `nextInt(spacing-8)`），再用反射的
+  `canSpawnStructureAtCoords`（SRG `func_75047_a`）确认。spacing 反射读取
+  （`field_82669_g` / `field_75054_f`，回退 32），salt 由子类给出
+  （神殿 14357617、村庄 10387312）。确认这一步是关键：若某个包改了间距或偏移，重放会自然失配、
+  宁可返回空也不会给出错误坐标。
+- **验证**：用世界种子离线复刻本算法，神殿候选 `(2328, 3960)`、村庄候选 `(2312, 4136)`
+  与实机 `getNearestStructurePos` 的结果逐字一致。
 - **无变体的原版结构**：`stronghold` / `monument` / `mansion` / `mineshaft` 都只有一种形态，保持父项即可。
-- **变体 id**：`minecraft:temple/desert`、`minecraft:temple/jungle`、`minecraft:temple/witch_hut`；
+- **变体 id**：`minecraft:temple/desert|jungle|witch_hut|igloo`；
   `minecraft:village/plains|desert|savanna|taiga|snowy`。命中一律标 `variantConfirmed=true`。
+- **成本**：半径 10000 时约 1200 个候选，每个一次 `canSpawnStructureAtCoords`（哈希 + biome 查询），
+  实测个位数毫秒。
