@@ -239,6 +239,9 @@ public class RoguelikeLocator implements IStructureLocator {
     }
 
     /** Mutable counters for one search; kept out of fields so concurrent searches cannot mix. */
+    /** Set when the last {@code originFor} call had to answer without reading blocks. */
+    private boolean lastOriginPredicted;
+
     private static final class SearchState {
         final boolean themed;
         final String requiredTheme;
@@ -246,6 +249,7 @@ public class RoguelikeLocator implements IStructureLocator {
         int originRejections;
         boolean stop;
         boolean loggedSample;
+        boolean loggedPrediction;
 
         SearchState(boolean themed, String requiredTheme, String requiredSetting) {
             this.themed = themed;
@@ -267,6 +271,7 @@ public class RoguelikeLocator implements IStructureLocator {
             return null;
         }
         BlockPos origin = originFor(world, chunkX, chunkZ);
+        boolean predicted = lastOriginPredicted;
         if (origin == null) {
             return rejectOrigin(state, chunkX, chunkZ);
         }
@@ -287,6 +292,14 @@ public class RoguelikeLocator implements IStructureLocator {
                 LOG.info("[ROGUELIKE] nearest dungeon at ({}, {}) uses settings {}",
                         origin.getX(), origin.getZ(), resolved[1]);
             }
+        }
+        if (predicted) {
+            if (!state.loggedPrediction) {
+                state.loggedPrediction = true;
+                LOG.info("[ROGUELIKE] chunk ({}, {}) is not generated yet; reporting the predicted "
+                        + "origin instead of loading it", chunkX, chunkZ);
+            }
+            return StructureResult.of(STRUCTURE_ID, origin, sourceName() + " (predicted)", playerPos);
         }
         return StructureResult.of(STRUCTURE_ID, origin, sourceName(), playerPos);
     }
@@ -437,16 +450,45 @@ public class RoguelikeLocator implements IStructureLocator {
         }
         java.util.Random random = chunkRandom(world.getSeed(), chunkX, chunkZ);
         int radiusMax = spawnFrequency * 8;
+        // Reading blocks here would make the search generate the very chunks it is asking about.
+        // When the chunk is not loaded the replay cannot be verified, so the first attempt is
+        // returned as a prediction instead — the cell is real, the exact spot is not confirmed.
+        boolean loaded = world.isBlockLoaded(
+                new BlockPos((chunkX << 4) + 8, DUNGEON_ORIGIN_Y, (chunkZ << 4) + 8));
+        lastOriginPredicted = !loaded;
+        int firstX = 0;
+        int firstZ = 0;
         for (int attempt = 0; attempt < spawnAttempts; attempt++) {
             int radius = random.nextInt(radiusMax);
             double angle = random.nextDouble() * 2.0 * Math.PI;
             int x = (chunkX << 4) + (int) (Math.cos(angle) * radius);
             int z = (chunkZ << 4) + (int) (Math.sin(angle) * radius);
-            if (looksLikeDungeon(world, x, z)) {
+            if (attempt == 0) {
+                firstX = x;
+                firstZ = z;
+            }
+            if (loaded && looksLikeDungeon(world, x, z)) {
                 return new BlockPos(x, upperLimit, z);
             }
         }
+        if (!loaded && mayHoldDungeon(world, firstX, firstZ)) {
+            return new BlockPos(firstX, upperLimit, firstZ);
+        }
         return null;
+    }
+
+    /**
+     * Cheap veto for predictions: the generator refuses spawns whose column starts with water, and
+     * oceans cover most of the map, so without this every ocean cell would answer "predicted".
+     * Biome lookups work on ungenerated chunks.
+     */
+    private static boolean mayHoldDungeon(World world, int blockX, int blockZ) {
+        net.minecraft.world.biome.Biome biome = world.getBiome(new BlockPos(blockX, 64, blockZ));
+        if (biome == null || biome.getRegistryName() == null) {
+            return true;
+        }
+        String path = biome.getRegistryName().toString().toLowerCase(java.util.Locale.ROOT);
+        return !(path.contains("ocean") || path.contains("river") || path.contains("beach"));
     }
 
     private boolean originLookupReady() {
