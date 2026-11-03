@@ -99,13 +99,12 @@ public class RoguelikeLocator implements IStructureLocator {
      * reads blocks (and may load the chunk), so an ocean full of failed candidates must not turn a
      * search into a chunk-loading marathon.
      */
-    private static final int MAX_SPAWN_CHECKS = 16;
+    private static final int MAX_SPAWN_CHECKS = 64;
     /**
-     * A themed search has to replay the origin for every candidate (the theme is only knowable at
-     * the real position), so it is bounded by this many nearest grid chunks instead of the full
-     * grid. 40 chunks at 51-chunk spacing covers roughly a 2000-block radius around the player.
+     * A themed search now walks the whole grid (no candidate cap), so it needs a wall-clock guard:
+     * the work is proportional to radius squared and the server thread is blocked meanwhile.
      */
-    private static final int MAX_THEMED_CANDIDATES = 40;
+    private static final long MAX_SEARCH_MS = 30_000L;
 
     /** Marks a variant that names a config setting instead of an enum theme. */
     private static final String SETTING_MARKER = "/setting/";
@@ -189,19 +188,18 @@ public class RoguelikeLocator implements IStructureLocator {
         long budget = CHECK_BUDGET;
         boolean themed = requiredTheme != null || requiredSetting != null;
         SearchState state = new SearchState(themed, requiredTheme, requiredSetting);
+        long startedAt = System.currentTimeMillis();
 
-        // The vanilla-structure distance scan inside canGenerateDungeonHere walks thousands of
-        // chunks; it only ever vetoes spawns within 8 blocks of a village/temple, so it is disabled
-        // for the duration of the replay and restored right after.
         {
             if (spawnFrequency > 1) {
                 // canSpawnInChunk only accepts chunkX%f==0 && chunkZ%f==0, so walking every chunk in
                 // the radius is wasted work: on this pack it is 200k hash calls for ~600 real
                 // candidates, which used to cost 2.3 s. Enumerate the grid instead.
-                int index = 0;
                 for (int[] candidate : gridCandidates(playerPos, radius)) {
-                    if (themed && ++index > MAX_THEMED_CANDIDATES) {
-                        break;
+                    if (System.currentTimeMillis() - startedAt > MAX_SEARCH_MS) {
+                        LOG.warn("[ROGUELIKE] stopped after {} ms without a match; radius {} is too "
+                                + "large for a themed search", MAX_SEARCH_MS, radius);
+                        return null;
                     }
                     StructureResult result = tryChunk(world, editor, playerPos,
                             candidate[0], candidate[1], state, maxDistanceSq);
@@ -262,9 +260,12 @@ public class RoguelikeLocator implements IStructureLocator {
         if (!spawnAllowed(chunkX, chunkZ, editor)) {
             return null;
         }
-        // No theme pre-filter at the chunk centre: the origin may sit up to 408 blocks away and in
-        // a different biome, so a centre-based guess both wastes work and silently drops real
-        // dungeons (a known ocean temple had its origin ~190 blocks from the chunk centre).
+        // Cheap biome-only pre-filter for themed searches. The origin can sit up to 408 blocks from
+        // the chunk centre, so the centre alone is not enough — five samples inside the chunk cover
+        // the ordinary cases without loading anything: getBiome works on ungenerated chunks.
+        if (state.themed && !chunkMayMatch(world, chunkX, chunkZ, state)) {
+            return null;
+        }
         BlockPos origin = originFor(world, chunkX, chunkZ);
         if (origin == null) {
             return rejectOrigin(state, chunkX, chunkZ);
@@ -405,6 +406,22 @@ public class RoguelikeLocator implements IStructureLocator {
             return resolved[1] != null && requiredSetting.equalsIgnoreCase(resolved[1]);
         }
         return resolved[0] != null && requiredTheme.equalsIgnoreCase(resolved[0]);
+    }
+
+    /**
+     * Five-sample biome pre-filter for a themed search. Samples stay inside the chunk, so this only
+     * catches the cases the generator would also decide the same way; the exact origin check after
+     * it remains the authority. {@code getBiome} does not load a chunk, which is what keeps a
+     * full-radius themed search affordable.
+     */
+    private boolean chunkMayMatch(World world, int chunkX, int chunkZ, SearchState state) {
+        int cx = (chunkX << 4) + 8;
+        int cz = (chunkZ << 4) + 8;
+        return variantMatches(world, cx, cz, state.requiredTheme, state.requiredSetting)
+                || variantMatches(world, cx - 5, cz - 5, state.requiredTheme, state.requiredSetting)
+                || variantMatches(world, cx + 5, cz - 5, state.requiredTheme, state.requiredSetting)
+                || variantMatches(world, cx - 5, cz + 5, state.requiredTheme, state.requiredSetting)
+                || variantMatches(world, cx + 5, cz + 5, state.requiredTheme, state.requiredSetting);
     }
 
     /**

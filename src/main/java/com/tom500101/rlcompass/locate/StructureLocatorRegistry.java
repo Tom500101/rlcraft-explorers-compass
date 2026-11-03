@@ -34,7 +34,7 @@ public final class StructureLocatorRegistry {
 
     /** Mirrors the {@code @Config.RangeInt} bounds on {@link CompassConfig#searchRadius}. */
     private static final int MIN_RADIUS = 100;
-    private static final int MAX_RADIUS = 100000;
+    private static final int MAX_RADIUS = 20000;
 
     /** Variant lists may scan a config directory; 60s keeps repeated picker opens cheap. */
     private static final long VARIANT_CACHE_TTL_MS = 60_000L;
