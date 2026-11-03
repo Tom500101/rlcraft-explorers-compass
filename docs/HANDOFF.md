@@ -300,23 +300,59 @@
 - `GuiTheme` 现在只有 `LIST_BACKGROUND` / `SELECTION_LAYER` / `SCROLLBAR_WIDTH` / `SCROLL_TRACK` /
   `SCROLL_THUMB` 与文本色；`CONTROL*` 是按钮状态。
 
-**未做**：`GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，没有套这套列表规格。
+### 8.4 建议点仓库（2026-11-03 深夜）
+
+- 同一套扁平列表：`drawDefaultBackground` + 列表区 0x7F、选中叠 0x7F、6px 滚动条，行高 20。
+- 状态不再循环点击：点行尾的状态格弹出三项菜单（未探索 / 已找到 / 未找到），菜单是近不透明底
+  (`0xE6000000`) + 1px 描边，避免落在行上看不清；点空白处只关菜单，不会误触下面的行。
+- 底部按钮换成 `TransparentButton`；标题居中。
+
+**未做**：仓库左上角没有列头（id / 坐标 / 状态），上游同样没有；条目多时靠 id 前缀辨识。
 
 ## 9. 待办
 
-1. **`UltraRarePredictor` 的 vanilla 锚点还没接枚举器**（`locate/impl/UltraRarePredictor.java` 类注释的 tier 2）。
-   目前 `hasVanillaAnchor` 能判断「声明了 vanilla 生成信息」，但**没有任何调用方**，候选仍退回生物群系层。
-   **2026-11-03 实测规模**（`.rcst` 是 zip，必须解压读 `structure.json`，直接 grep 二进制会得到 0）：
-   共 **30 条**（jar 内置 15 + 整合包 15），全部是 `Village*` 部件（Chandlery / Glassworks / Kitchen /
-   Library / Stonemason / Tannery / Church / ForgeLarge / GuardTower / Inn…），字段为
-   `generationInfos[].type="vanilla"` + `id=vanilla_<hash>` + `generationWeight` +
-   `min/maxBaseLimit` + `min/maxScaledLimit` + `spawnShiftX/Y/Z` + `biomeExpression`，
-   `spawnShiftY` 多为 -2/-3 → 这类结构落在**原版村庄**的位置上。
-   下一步：先解 RC 的 `VanillaGeneration` 拿到 `vanilla_<hash>` → 原版生成器的映射（不能按结构名猜），
-   再用 `VillageLocator` 的候选枚举 + 该条目的 `biomeExpression` 过滤，命中标 `vanilla anchor (suggested)`。
-2. **BattleTowers 的预测公式已回滚**：上一轮按 `BattletowerPositionsFile` 的网格公式预测塔位，
+1. **BattleTowers 的预测公式已回滚**：上一轮按 `BattletowerPositionsFile` 的网格公式预测塔位，
    实机核对发现与真实塔位的**奇偶**不符（预测点与实测塔成对错位），代码已撤，
    当前只剩 region 扫描（§4）这条记录型路径。
    下一步要**受控实验**：固定种子 + 已知塔位序列（逐个 `/tp` 验证），先证伪「偏移是常量还是按 chunk 奇偶」，
    再决定是否重写；实验结论出来前不要把公式放回主路径。
-3. `GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，与 §8 的扁平主题不一致。
+2. **实机验收**：新版选择界面 / 仓库 / 锚点建议都只过了编译，还没进游戏看过（见 §11 的清单）。
+3. 多人生存：仓库只读单机存档路径，联机下为空；需要的话要走服务端包。
+
+## 10. RC 的 vanilla 锚点（2026-11-03 深夜）
+
+- **机制（反汇编确认）**：`ivorius.reccomplex.world.gen.feature.structure.generic.generation.VanillaGeneration`
+  只被 `GenericVillageCreationHandler` 消费，后者实现 `VillagerRegistry.IVillageCreationHandler`。
+  也就是说，声明 `generationInfos[].type="vanilla"` 的结构会被注册成**村庄部件**，只能长在原版村庄里。
+  `id` 是 `randomID(VanillaGeneration.class)` 生成的随机串（如 `vanilla_c948bef2`），**不代表原版生成器类型**，
+  不要按 id 去映射 village/temple/mineshaft。
+- **规模**：398 个 `.rcst`（jar 187 + 包 211）里 30 条带锚点，全部是 `Village*` 部件
+  （Chandlery / Glassworks / Kitchen / Library / Stonemason / Tannery / Church / ForgeLarge /
+  GuardTower / Inn…），`spawnShiftY` 多为 -2/-3，与「村庄地面下的地基」一致。
+- **实现**（`UltraRarePredictor`）：
+  - `ANCHORS` 缓存每条结构的 `biomeExpression` 列表（空列表 = 不限生物群系，与「没有锚点」区分开）；
+  - 有锚点时先走 `VillageLocator.enumerateVillages`（复用 §6 的 cell 枚举 + spacing 自校验），
+    再用条目自己的表达式过滤，最近且未查过的村庄中心返回 `Suggestion(pos, vanillaAnchor=true)`；
+  - 没有村庄命中才退回生物群系网格（并打一条 `falling back to biomes`）；
+  - 来源串区分 `Recurrent Complex (vanilla anchor)` 与 `(suggested)`。
+- **顺带修掉的解析 bug**：RC 用 Gson 的 HTML-safe 模式写包，`&` 存成 `\u0026`、`=` 存成 `\u003d`。
+  旧的手写扫描直接拿原始文本当表达式，含 `&` 的连接式（jar 内 21 条，如 `$THEMED_TREES & !$BIRCH_TREES`）
+  永远匹配不上。现在两个扫描器都先 `unescapeJson`。
+- **表达式求值**：换成递归下降解析器，支持 `!`、`&`、`|`、括号、`$TAG`、`type=TAG`（兼容 `type=$TAG`）、
+  `id=`、裸生物群系名。旧实现按字符 split，`!($HOT | $DRY)` 会被拆坏。
+- **离线验证**：用同一套扫描逻辑复刻成 Python，对 jar 内 187 个结构比对「手写扫描 vs `json.loads`」，
+  锚点表达式 187/187 一致。
+- **待实机**：`VillageSavannaChandlery` 应返回真实村庄中心（source 为 vanilla anchor），下一次搜索换下一座村庄。
+
+## 11. 实机验收清单（本轮改动）
+
+1. **排版**：标题在左栏上方居中；搜索框在列表列顶部；四个按钮 110×20 竖排在左侧，Cancel 贴底；
+   列表从 x=130 铺到右边距 10。没有副标题、计数行、@mod 提示。
+2. **列表**：行高 50、三行文字（名称 / Source / ID）；选中行比列表底明显更深且四周各外扩 4px；
+   无分隔线；滚动条 6px，滑块接近不透明。
+3. **仓库**：从选择界面 `Warehouse` 进入；点行尾状态格弹三项菜单；选择后行状态即时更新；
+   `Search again` 只在选中行后可用。
+4. **锚点**：搜 `VillageSavannaChandlery`，日志应出现
+   `[RC] vanilla anchor for 'VillageSavannaChandlery': village at (x, z) matches [type=savanna]`，
+   tp 过去应落在村庄里；再搜一次应换到下一座村庄。
+

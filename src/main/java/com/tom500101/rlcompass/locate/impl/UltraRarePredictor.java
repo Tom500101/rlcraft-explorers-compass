@@ -12,6 +12,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -42,10 +44,13 @@ import com.tom500101.rlcompass.cache.SearchMemory;
  *       with weight 0 are "allowed but not preferred" and come last. Within a tier the sweep is a
  *       coarse grid (128 blocks) walked outward, skipping anything {@link SearchMemory} already
  *       holds.</li>
- *   <li><b>Vanilla anchor</b> (not implemented yet) — structures that also declare a
- *       {@code vanilla} generation info are placed at vanilla structure positions, which this mod
- *       can enumerate exactly. Wiring those enumerators in here is the next step; until then such
- *       structures fall through to the biome tier.</li>
+ *   <li><b>Vanilla anchor</b> — a {@code generationInfos} entry of type {@code vanilla} registers the
+ *       structure as a <em>village piece</em> (Recurrent Complex hands it to
+ *       {@code VillagerRegistry.IVillageCreationHandler}), so the structure can only stand inside a
+ *       vanilla village. Those candidates are enumerated exactly and filtered by the entry's own
+ *       {@code biomeExpression}; only when no village matches does the search fall back to the biome
+ *       tier. Evidence: {@code VanillaGenerationClassFactory} / {@code GenericVillageCreationHandler}
+ *       and the 30 village-part pack files (docs/HANDOFF.md §9).</li>
  * </ol>
  */
 final class UltraRarePredictor {
@@ -66,9 +71,22 @@ final class UltraRarePredictor {
         }
     }
 
+    /** One suggestion plus how it was obtained, so callers can label it honestly. */
+    static final class Suggestion {
+        final BlockPos pos;
+        final boolean vanillaAnchor;
+
+        Suggestion(BlockPos pos, boolean vanillaAnchor) {
+            this.pos = pos;
+            this.vanillaAnchor = vanillaAnchor;
+        }
+    }
+
     private static final Map<String, List<Filter>> FILTERS = new HashMap<String, List<Filter>>();
-    private static final Map<String, Boolean> VANILLA = new HashMap<String, Boolean>();
+    /** Key present means the structure declares a vanilla anchor; value may be an empty list. */
+    private static final Map<String, List<String>> ANCHORS = new HashMap<String, List<String>>();
     private static final Map<String, File> FILES = new HashMap<String, File>();
+    private static final Pattern VANILLA_TYPE = Pattern.compile("\"type\"\\s*:\\s*\"vanilla\"");
 
     private UltraRarePredictor() {
     }
@@ -76,18 +94,35 @@ final class UltraRarePredictor {
     /** True when the pack also declares a vanilla-generation anchor for this structure. */
     static boolean hasVanillaAnchor(String structureId) {
         filters(structureId);
-        synchronized (VANILLA) {
-            Boolean value = VANILLA.get(structureId);
-            return value != null && value.booleanValue();
+        synchronized (ANCHORS) {
+            return ANCHORS.containsKey(structureId);
+        }
+    }
+
+    /** The anchor's {@code biomeExpression}s; an empty list means "any biome". */
+    private static List<String> anchorExpressions(String structureId) {
+        synchronized (ANCHORS) {
+            List<String> expressions = ANCHORS.get(structureId);
+            return expressions == null ? java.util.Collections.<String>emptyList() : expressions;
         }
     }
 
     /**
-     * The nearest unchecked place whose biome the structure accepts, preferring the generator's
-     * higher-weight biomes. Returns {@code null} when nothing qualifies inside {@code radius}.
+     * The nearest unchecked place the structure can occupy, preferring the exact vanilla anchor when
+     * the pack declares one, then the generator's higher-weight biomes. Returns {@code null} when
+     * nothing qualifies inside {@code radius}.
      */
-    static BlockPos suggest(World world, BlockPos playerPos, int radius, String structureId,
-                            SearchMemory memory) {
+    static Suggestion suggest(World world, BlockPos playerPos, int radius, String structureId,
+                              SearchMemory memory) {
+        if (hasVanillaAnchor(structureId)) {
+            BlockPos anchored = anchoredSuggestion(world, playerPos, radius, structureId, memory);
+            if (anchored != null) {
+                return new Suggestion(anchored, true);
+            }
+            LOG.info("[RC] no anchored village matched '{}' within {} blocks; falling back to biomes",
+                    structureId, radius);
+        }
+
         List<Filter> all = filters(structureId);
         if (all.isEmpty()) {
             return null;
@@ -105,10 +140,52 @@ final class UltraRarePredictor {
         BlockPos preferred = sweep(world, playerPos, memory, structureId, all, bestWeight > 0.0,
                 centerChunkX, centerChunkZ, maxRing, maxDistanceSq);
         if (preferred != null) {
-            return preferred;
+            return new Suggestion(preferred, false);
         }
-        return sweep(world, playerPos, memory, structureId, all, false, centerChunkX, centerChunkZ,
-                maxRing, maxDistanceSq);
+        BlockPos fallback = sweep(world, playerPos, memory, structureId, all, false, centerChunkX,
+                centerChunkZ, maxRing, maxDistanceSq);
+        return fallback == null ? null : new Suggestion(fallback, false);
+    }
+
+    /**
+     * Enumerates the exact positions the anchor allows. RC registers a {@code vanilla} generation as
+     * a village piece ({@code GenericVillageCreationHandler}), so the structure can only stand inside
+     * a vanilla village; the village centre is the right granularity because the exact building is
+     * chosen during village layout and cannot be replayed.
+     */
+    private static BlockPos anchoredSuggestion(World world, BlockPos playerPos, int radius,
+                                               String structureId, SearchMemory memory) {
+        List<String> expressions = anchorExpressions(structureId);
+        VillageLocator villages = new VillageLocator("field_186005_x", "villageGenerator");
+        for (BlockPos candidate : villages.enumerateVillages(world, playerPos, radius)) {
+            if (memory != null && memory.isKnown(structureId, candidate)) {
+                continue;
+            }
+            if (!matchesAny(world.getBiome(candidate), expressions)) {
+                continue;
+            }
+            if (memory != null) {
+                memory.remember(structureId, candidate);
+            }
+            LOG.info("[RC] vanilla anchor for '{}': village at ({}, {}){}", structureId,
+                    candidate.getX(), candidate.getZ(),
+                    expressions.isEmpty() ? "" : " matches " + expressions);
+            return candidate;
+        }
+        return null;
+    }
+
+    /** True when the biome matches any anchor expression; no expressions means "any biome". */
+    private static boolean matchesAny(Biome biome, List<String> expressions) {
+        if (expressions.isEmpty()) {
+            return true;
+        }
+        for (String expression : expressions) {
+            if (matchesExpression(biome, expression)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static BlockPos sweep(World world, BlockPos playerPos, SearchMemory memory,
@@ -167,47 +244,158 @@ final class UltraRarePredictor {
         return false;
     }
 
-    /** RC's matcher subset that appears in pack files: {@code &}, {@code |}, {@code !}, {@code $TAG}. */
+    /**
+     * RC's biome-expression subset that appears in pack files: {@code &}, {@code |}, {@code !},
+     * parentheses, {@code $TAG}, {@code type=TAG}, {@code id=name} and bare biome names.
+     *
+     * <p>A recursive-descent parser rather than string splitting: {@code !($HOT | $DRY)} is a real
+     * expression in this pack, and splitting on {@code |} would evaluate it as two broken halves.
+     * Malformed expressions evaluate to {@code false} instead of throwing.
+     */
     static boolean matchesExpression(Biome biome, String expression) {
         if (expression == null || expression.trim().isEmpty()) {
             return true;
         }
-        for (String alternative : expression.split("\\|")) {
-            if (matchesConjunction(biome, alternative)) {
-                return true;
-            }
+        if (biome == null) {
+            return false;
         }
-        return false;
+        Cursor cursor = new Cursor(biome, expression);
+        try {
+            boolean value = parseOr(cursor);
+            cursor.skipSpace();
+            return cursor.atEnd() && value;
+        } catch (RuntimeException malformed) {
+            return false;
+        }
     }
 
-    private static boolean matchesConjunction(Biome biome, String expression) {
-        boolean any = false;
-        for (String raw : expression.split("&")) {
-            String token = raw.trim();
-            if (token.isEmpty()) {
-                continue;
+    private static boolean parseOr(Cursor cursor) {
+        boolean value = parseAnd(cursor);
+        while (true) {
+            cursor.skipSpace();
+            if (!cursor.consume('|')) {
+                return value;
             }
-            any = true;
-            boolean negate = token.startsWith("!");
-            if (negate) {
-                token = token.substring(1).trim();
+            boolean right = parseAnd(cursor);
+            value = value || right;
+        }
+    }
+
+    private static boolean parseAnd(Cursor cursor) {
+        boolean value = parseUnary(cursor);
+        while (true) {
+            cursor.skipSpace();
+            if (!cursor.consume('&')) {
+                return value;
             }
-            boolean hit;
-            if (token.startsWith("$")) {
-                BiomeDictionary.Type type = BiomeDictionary.Type.getType(
-                        token.substring(1).toUpperCase(Locale.ROOT));
-                hit = type != null && BiomeDictionary.hasType(biome, type);
-            } else {
-                String path = biome.getRegistryName() == null ? ""
-                        : biome.getRegistryName().toString().toLowerCase(Locale.ROOT);
-                String wanted = token.toLowerCase(Locale.ROOT);
-                hit = path.equals(wanted) || path.endsWith(":" + wanted);
+            boolean right = parseUnary(cursor);
+            value = value && right;
+        }
+    }
+
+    private static boolean parseUnary(Cursor cursor) {
+        cursor.skipSpace();
+        if (cursor.consume('!')) {
+            return !parseUnary(cursor);
+        }
+        if (cursor.consume('(')) {
+            boolean value = parseOr(cursor);
+            cursor.skipSpace();
+            cursor.consume(')');
+            return value;
+        }
+        return atomMatches(cursor.biome, cursor.readAtom());
+    }
+
+    private static boolean atomMatches(Biome biome, String rawToken) {
+        String token = rawToken.trim();
+        if (token.isEmpty()) {
+            return false;
+        }
+        if (token.startsWith("$")) {
+            return hasType(biome, token.substring(1));
+        }
+        if (token.startsWith("type=")) {
+            return hasType(biome, token.substring(5));
+        }
+        if (token.startsWith("id=")) {
+            return idMatches(biome, token.substring(3));
+        }
+        if (token.startsWith("name=")) {
+            // RC's display name is the registry path without the namespace; same comparison.
+            return idMatches(biome, token.substring(5));
+        }
+        return idMatches(biome, token);
+    }
+
+    private static boolean hasType(Biome biome, String name) {
+        try {
+            String key = name.trim();
+            // RC writes both "type=savanna" and "type=$SAVANNA" depending on how the pack was authored.
+            if (key.startsWith("$")) {
+                key = key.substring(1);
             }
-            if (hit == negate) {
-                return false;
+            BiomeDictionary.Type type = BiomeDictionary.Type.getType(key.toUpperCase(Locale.ROOT));
+            return type != null && BiomeDictionary.hasType(biome, type);
+        } catch (RuntimeException unknown) {
+            return false;
+        }
+    }
+
+    private static boolean idMatches(Biome biome, String wanted) {
+        String needle = wanted.trim().toLowerCase(Locale.ROOT);
+        if (needle.isEmpty()) {
+            return false;
+        }
+        String path = biome.getRegistryName() == null
+                ? ""
+                : biome.getRegistryName().toString().toLowerCase(Locale.ROOT);
+        return path.equals(needle) || path.endsWith(":" + needle);
+    }
+
+    /** Character cursor for the expression parser. */
+    private static final class Cursor {
+        private final Biome biome;
+        private final String text;
+        private int index;
+
+        Cursor(Biome biome, String text) {
+            this.biome = biome;
+            this.text = text;
+        }
+
+        void skipSpace() {
+            while (index < text.length() && Character.isWhitespace(text.charAt(index))) {
+                index++;
             }
         }
-        return any;
+
+        boolean consume(char expected) {
+            skipSpace();
+            if (index < text.length() && text.charAt(index) == expected) {
+                index++;
+                return true;
+            }
+            return false;
+        }
+
+        boolean atEnd() {
+            return index >= text.length();
+        }
+
+        String readAtom() {
+            skipSpace();
+            int start = index;
+            while (index < text.length()) {
+                char ch = text.charAt(index);
+                if (ch == '&' || ch == '|' || ch == '(' || ch == ')' || ch == '!'
+                        || Character.isWhitespace(ch)) {
+                    break;
+                }
+                index++;
+            }
+            return text.substring(start, index);
+        }
     }
 
     /** Reads and caches the structure's biome filters, ordered by descending weight. */
@@ -219,7 +407,7 @@ final class UltraRarePredictor {
             }
         }
         List<Filter> out = new ArrayList<Filter>();
-        boolean vanilla = false;
+        List<String> anchors = null;
         File file = structureFile(structureId);
         if (file != null && file.isFile()) {
             try {
@@ -229,7 +417,7 @@ final class UltraRarePredictor {
                     if (entry != null) {
                         String json = new String(readAll(zip.getInputStream(entry)),
                                 StandardCharsets.UTF_8);
-                        vanilla = json.contains("\"vanilla\"");
+                        anchors = parseAnchorExpressions(json);
                         out.addAll(parseBiomeFilters(json));
                     }
                 } finally {
@@ -247,9 +435,96 @@ final class UltraRarePredictor {
         });
         synchronized (FILTERS) {
             FILTERS.put(structureId, out);
-            VANILLA.put(structureId, Boolean.valueOf(vanilla));
+        }
+        synchronized (ANCHORS) {
+            if (anchors != null) {
+                ANCHORS.put(structureId, anchors);
+            }
         }
         return out;
+    }
+
+    /**
+     * Decodes the JSON string escapes RC writes into pack files. Gson's HTML-safe mode turns
+     * {@code &} into {@code \\u0026} and {@code =} into {@code \\u003d}, so the raw text of an
+     * expression like {@code $THEMED_TREES & !$BIRCH_TREES} is not the expression itself. Without this
+     * the hand-rolled scanners would compare against escape sequences and every conjunction would
+     * silently match nothing.
+     */
+    private static String unescapeJson(String raw) {
+        if (raw.indexOf('\\') < 0) {
+            return raw;
+        }
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char ch = raw.charAt(i);
+            if (ch != '\\' || i + 1 >= raw.length()) {
+                out.append(ch);
+                continue;
+            }
+            char next = raw.charAt(++i);
+            switch (next) {
+                case 'u':
+                    if (i + 4 < raw.length()) {
+                        try {
+                            out.append((char) Integer.parseInt(raw.substring(i + 1, i + 5), 16));
+                            i += 4;
+                        } catch (NumberFormatException malformed) {
+                            out.append(next);
+                        }
+                    } else {
+                        out.append(next);
+                    }
+                    break;
+                case 'n':
+                    out.append('\n');
+                    break;
+                case 'r':
+                    out.append('\r');
+                    break;
+                case 't':
+                    out.append('\t');
+                    break;
+                default:
+                    // \" \\ \/ and anything else: the escaped character stands for itself.
+                    out.append(next);
+                    break;
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * Collects {@code biomeExpression}s from every {@code generationInfos} entry whose type is
+     * {@code vanilla}. Returns {@code null} when the structure declares no such entry at all — the
+     * distinction matters, because "anchored with no biome restriction" is not the same as "not
+     * anchored".
+     *
+     * <p>Same hand-rolled scan as {@link #parseBiomeFilters}: the file is generated by RC, so the
+     * key order is fixed and a JSON dependency is not worth adding to the mod jar.
+     */
+    private static List<String> parseAnchorExpressions(String json) {
+        List<String> out = new ArrayList<String>();
+        Matcher matcher = VANILLA_TYPE.matcher(json);
+        boolean found = false;
+        while (matcher.find()) {
+            found = true;
+            int nextType = json.indexOf("\"type\"", matcher.end());
+            String segment = nextType < 0
+                    ? json.substring(matcher.end())
+                    : json.substring(matcher.end(), nextType);
+            int at = segment.indexOf("\"biomeExpression\"");
+            if (at < 0) {
+                out.add("");
+                continue;
+            }
+            int start = segment.indexOf('"', at + 17);
+            int end = start < 0 ? -1 : segment.indexOf('"', start + 1);
+            out.add(start >= 0 && end > start
+                    ? unescapeJson(segment.substring(start + 1, end)).trim()
+                    : "");
+        }
+        return found ? out : null;
     }
 
     /**
@@ -266,7 +541,7 @@ final class UltraRarePredictor {
             if (start < 0 || end < 0) {
                 break;
             }
-            String expression = json.substring(start + 1, end).trim();
+            String expression = unescapeJson(json.substring(start + 1, end)).trim();
             double weight = 0.0;
             int weightAt = json.indexOf("\"weight\"", end);
             int close = json.indexOf('}', end);

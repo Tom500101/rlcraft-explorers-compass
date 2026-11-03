@@ -336,15 +336,20 @@ public class RecurrentComplexLocator implements IStructureLocator {
     // -------------------------------------------------------------- suggestions
 
     private StructureResult suggest(World world, BlockPos playerPos, int radius, String structureId) {
-        BlockPos candidate = UltraRarePredictor.suggest(world, playerPos, radius, structureId,
-                SearchMemory.get(world));
+        UltraRarePredictor.Suggestion candidate = UltraRarePredictor.suggest(world, playerPos, radius,
+                structureId, SearchMemory.get(world));
         if (candidate == null) {
             return null;
         }
-        LOG.info("[RC] suggested search area for '{}' at ({}, {})", structureId, candidate.getX(),
-                candidate.getZ());
-        return new StructureResult(STRUCTURE_ID, candidate, sourceName() + " (suggested)",
-                StructureResult.horizontalDistanceSq(candidate, playerPos));
+        // Label the two tiers honestly: an anchor is a real village position, a biome sweep is not.
+        String source = candidate.vanillaAnchor
+                ? sourceName() + " (vanilla anchor)"
+                : sourceName() + " (suggested)";
+        LOG.info("[RC] {} for '{}' at ({}, {})",
+                candidate.vanillaAnchor ? "vanilla anchor" : "suggested area", structureId,
+                candidate.pos.getX(), candidate.pos.getZ());
+        return new StructureResult(STRUCTURE_ID, candidate.pos, source,
+                StructureResult.horizontalDistanceSq(candidate.pos, playerPos));
     }
 
     /** Moves NEW candidates the player is standing on to FOUND or MISSING, using the records. */

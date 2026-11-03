@@ -1,6 +1,7 @@
 package com.tom500101.rlcompass.locate.impl;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import net.minecraft.util.ResourceLocation;
@@ -61,6 +62,21 @@ public class VillageLocator extends MapGenLocator {
         String wanted = suffix(variantId);
         StructureResult result = nearestOfType(world, playerPos, radius, wanted);
         return result == null ? null : result.withVariant(variantId, true);
+    }
+
+    /**
+     * Village positions within {@code radius}, nearest first.
+     *
+     * <p>Used by the ultra-rare predictor: Recurrent Complex registers a structure with a
+     * {@code vanilla} generation info as a village piece, so it can only stand inside a vanilla
+     * village. Package-private because it is an internal building block, not a search entry point.
+     */
+    List<BlockPos> enumerateVillages(World world, BlockPos playerPos, int radius) {
+        MapGenStructure generator = resolveGenerator(world);
+        if (generator == null) {
+            return Collections.emptyList();
+        }
+        return enumerateCandidates(world, generator, playerPos, radius, SEED_CONSTANT);
     }
 
     private StructureResult nearestOfType(World world, BlockPos playerPos, int radius, String wanted) {
