@@ -36,6 +36,7 @@ import com.tom500101.rlcompass.network.PacketSearchRequest;
 public class GuiStructureSelect extends GuiScreen {
 
     private static final int SEARCH_BUTTON_ID = 0;
+    private static final int WAREHOUSE_BUTTON_ID = 3;
     private static final int SORT_BUTTON_ID = 1;
     private static final int CANCEL_BUTTON_ID = 2;
 
@@ -48,6 +49,7 @@ public class GuiStructureSelect extends GuiScreen {
     private final Set<String> expandedParents = new HashSet<String>();
 
     private TransparentButton searchButton;
+    private TransparentButton warehouseButton;
     private TransparentButton sortButton;
     private TransparentButton cancelButton;
     private TransparentEditBox searchBox;
@@ -81,7 +83,10 @@ public class GuiStructureSelect extends GuiScreen {
                 I18n.format("gui.rlcompass.search"));
         sortButton = new TransparentButton(SORT_BUTTON_ID, 0, 0, 80, 18, sortMode.label());
         cancelButton = new TransparentButton(CANCEL_BUTTON_ID, 0, 0, 80, 18, I18n.format("gui.cancel"));
+        warehouseButton = new TransparentButton(WAREHOUSE_BUTTON_ID, 0, 0, 180, 18,
+                I18n.format("gui.rlcompass.warehouse"));
         buttonList.add(searchButton);
+        buttonList.add(warehouseButton);
         buttonList.add(sortButton);
         buttonList.add(cancelButton);
 
@@ -153,6 +158,8 @@ public class GuiStructureSelect extends GuiScreen {
             sortMode = sortMode.next();
             sortButton.displayString = sortMode.label();
             refreshEntries(true);
+        } else if (button.id == WAREHOUSE_BUTTON_ID) {
+            mc.displayGuiScreen(new GuiSuggestionWarehouse(this));
         } else if (button.id == CANCEL_BUTTON_ID) {
             mc.displayGuiScreen(null);
         }
@@ -448,6 +455,12 @@ public class GuiStructureSelect extends GuiScreen {
         cancelButton.y = y;
         cancelButton.width = utilityWidth;
         cancelButton.height = 18;
+
+        y += 25;
+        warehouseButton.x = x;
+        warehouseButton.y = y;
+        warehouseButton.width = buttonWidth;
+        warehouseButton.height = 18;
 
         int filterWidth = Math.max(150, Math.min(260, width / 4));
         searchBox.width = filterWidth - 16;

@@ -251,4 +251,39 @@ public final class SearchMemory {
         }
         return ids;
     }
+
+    /** Player override from the warehouse screen; the last write wins in the TSV. */
+    public void setState(String structureId, BlockPos pos, State state) {
+        String key = key(structureId, pos.getX(), pos.getZ());
+        synchronized (entries) {
+            Entry existing = entries.get(key);
+            if (existing != null && existing.state == state) {
+                return;
+            }
+            Entry updated = new Entry(structureId, pos, state);
+            entries.put(key, updated);
+            append(updated);
+        }
+        LOG.info("[MEMORY] {} at ({}, {}) set to {}", structureId, pos.getX(), pos.getZ(), state);
+    }
+
+    /** Every entry, ordered so the warehouse list is stable between openings. */
+    public List<Entry> sortedEntries() {
+        List<Entry> out;
+        synchronized (entries) {
+            out = new ArrayList<Entry>(entries.values());
+        }
+        java.util.Collections.sort(out, new java.util.Comparator<Entry>() {
+            @Override
+            public int compare(Entry a, Entry b) {
+                int byId = a.structureId.compareToIgnoreCase(b.structureId);
+                if (byId != 0) {
+                    return byId;
+                }
+                int byX = Integer.compare(a.pos.getX(), b.pos.getX());
+                return byX != 0 ? byX : Integer.compare(a.pos.getZ(), b.pos.getZ());
+            }
+        });
+        return out;
+    }
 }

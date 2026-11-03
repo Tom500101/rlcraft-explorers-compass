@@ -22,3 +22,12 @@ rlcompass.search.notFound=No %s found within the search radius
 
 # HUD line while a search is in flight
 rlcompass.hud.searching=Searching
+
+# suggestion warehouse: everything the compass has offered so far
+gui.rlcompass.warehouse=Suggestion warehouse
+gui.rlcompass.warehouse.title=Suggestion warehouse
+gui.rlcompass.warehouse.empty=Nothing searched yet
+gui.rlcompass.warehouse.searchAgain=Search again
+gui.rlcompass.warehouse.state.new=Unvisited
+gui.rlcompass.warehouse.state.found=Found
+gui.rlcompass.warehouse.state.missing=Nothing there

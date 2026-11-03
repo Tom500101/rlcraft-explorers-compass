@@ -22,3 +22,12 @@ rlcompass.search.notFound=搜索范围内没有找到 %s
 
 # 搜索进行中的 HUD 提示
 rlcompass.hud.searching=搜索中
+
+# 建议点仓库：指南针给出过的全部候选点
+gui.rlcompass.warehouse=建议点仓库
+gui.rlcompass.warehouse.title=建议点仓库
+gui.rlcompass.warehouse.empty=还没有搜索记录
+gui.rlcompass.warehouse.searchAgain=再搜一次
+gui.rlcompass.warehouse.state.new=未探索
+gui.rlcompass.warehouse.state.found=已找到
+gui.rlcompass.warehouse.state.missing=未找到
