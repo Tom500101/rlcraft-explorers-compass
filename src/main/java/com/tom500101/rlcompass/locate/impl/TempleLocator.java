@@ -79,7 +79,7 @@ public class TempleLocator extends MapGenLocator {
             LOG.debug("[TEMPLE] {} at {} ({} candidates in range)", wanted, candidate, candidates.size());
             return StructureResult.of(ID, candidate, sourceName(), playerPos);
         }
-        LOG.debug("[TEMPLE] no {} among {} candidates within {} blocks", wanted, candidates.size(), radius);
+        LOG.info("[TEMPLE] no {} among {} structures within {} blocks", wanted, candidates.size(), radius);
         return null;
     }
 

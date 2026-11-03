@@ -9,6 +9,9 @@ import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.gen.structure.MapGenStructure;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.locate.StructureVariant;
 
@@ -21,6 +24,8 @@ import com.tom500101.rlcompass.locate.StructureVariant;
  * and needs no random replay.
  */
 public class VillageLocator extends MapGenLocator {
+
+    private static final Logger LOG = LogManager.getLogger("rlcompass");
 
     public static final String ID = "minecraft:village";
 
@@ -69,6 +74,7 @@ public class VillageLocator extends MapGenLocator {
                 return StructureResult.of(ID, candidate, sourceName(), playerPos);
             }
         }
+        LOG.info("[VILLAGE] no {} among {} villages within {} blocks", wanted, candidates.size(), radius);
         return null;
     }
 
