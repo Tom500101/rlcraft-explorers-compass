@@ -143,4 +143,15 @@ public class StructureSearchEntry {
                 && (parentDisplayName.toLowerCase(Locale.ROOT).contains(needle)
                 || parentId.toLowerCase(Locale.ROOT).contains(needle));
     }
+
+    /**
+     * True when this row names something that actually exists in the world.
+     *
+     * <p>A parent row with children is only a folder: the search must never run against it, because
+     * "nearest Roguelike dungeon" has no concrete meaning when the row stands for 109 variants.
+     * A parent without variants (stronghold, mansion…) is itself the concrete structure.
+     */
+    public boolean isConcrete() {
+        return !isExpandable() || getVariantId() != null;
+    }
 }

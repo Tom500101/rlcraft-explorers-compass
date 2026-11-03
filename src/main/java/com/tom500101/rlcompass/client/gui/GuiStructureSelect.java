@@ -243,6 +243,12 @@ public class GuiStructureSelect extends GuiScreen {
         if (entry == null) {
             return;
         }
+        if (!entry.isConcrete()) {
+            // Folder rows only expand; searching them would ask for "the nearest <family>",
+            // which the locator cannot answer meaningfully.
+            toggleExpansion(entry);
+            return;
+        }
         searchFor(entry.getParentId(), entry.getVariantId());
     }
 
@@ -429,7 +435,8 @@ public class GuiStructureSelect extends GuiScreen {
         if (selectionList == null || searchButton == null) {
             return;
         }
-        searchButton.enabled = selectionList.hasSelection();
+        StructureSearchEntry selected = selectionList.getSelected();
+        searchButton.enabled = selected != null && selected.isConcrete();
         sortButton.enabled = allEntries.size() > 1;
     }
 
