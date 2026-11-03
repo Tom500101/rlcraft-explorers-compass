@@ -171,9 +171,10 @@ public class BattleTowersLocator implements IStructureLocator {
     }
 
     /**
-     * Material families the scanner can recognise. Sandstone and ice are absent on purpose: both
-     * occur naturally in tower-sized amounts, so they would need a shape check before being
-     * offered as a filter.
+     * Material families the scanner can recognise. Jungle and SmoothStone are absent: Jungle's
+     * walls are the same mossy cobblestone as {@code cobblestonemossy}, and SmoothStone's are plain
+     * stone, which the world is made of — neither can be told apart by counting blocks. They need a
+     * shape check (corner columns + hollow core) before they can be offered as filters.
      */
     @Override
     public List<StructureVariant> getVariants(World world) {
@@ -186,6 +187,10 @@ public class BattleTowersLocator implements IStructureLocator {
                 "Mossy Cobblestone Tower", StructureVariant.VariantSource.RUNTIME_API));
         out.add(new StructureVariant(STRUCTURE_ID + "/netherrack", STRUCTURE_ID,
                 "Netherrack Tower", StructureVariant.VariantSource.RUNTIME_API));
+        out.add(new StructureVariant(STRUCTURE_ID + "/sandstone", STRUCTURE_ID,
+                "Sandstone Tower", StructureVariant.VariantSource.RUNTIME_API));
+        out.add(new StructureVariant(STRUCTURE_ID + "/ice", STRUCTURE_ID,
+                "Ice Tower", StructureVariant.VariantSource.RUNTIME_API));
         return out;
     }
 

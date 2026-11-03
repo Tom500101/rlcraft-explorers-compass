@@ -85,6 +85,15 @@ public final class BattleTowersRegionScanner {
      */
     private static final int MIN_OBSIDIAN = 500;
     /**
+     * Sandstone and ice occur naturally in tower-sized amounts, so a count alone would flag every
+     * desert dune and ice field. A tower is vertical: a sampled one spanned 58 levels, while the
+     * dune that slipped through the count check spanned 29. Requiring a real height keeps the
+     * material test usable.
+     */
+    private static final int MIN_SANDSTONE = 800;
+    private static final int MIN_ICE = 500;
+    private static final int MIN_TOWER_HEIGHT = 40;
+    /**
      * Same-type hits closer than this are one tower (a tower spans 1-4 chunks, centres within ~8
      * blocks). Different types are never merged: two towers of different materials can stand next
      * to each other, and the old 24-block merge kept only one of them.
@@ -354,12 +363,30 @@ public final class BattleTowersRegionScanner {
             if (readInt(data, i + 9) != 4096) {
                 continue;
             }
+            int sectionY = readSectionY(data, i);
             int base = i + 13;
             for (int j = 0; j < 4096; j++) {
-                stats.add(data[base + j] & 0xFF, j & 15, (j >> 4) & 15);
+                int y = sectionY < 0 ? -1 : sectionY * 16 + ((j >> 8) & 15);
+                stats.add(data[base + j] & 0xFF, j & 15, (j >> 4) & 15, y);
             }
             i = base + 4095;
         }
+    }
+
+    /**
+     * Reads the section's {@code Y} byte that precedes its {@code Blocks} array. NBT stores
+     * {@code {Y: <byte>, Blocks: <byte[4096]>}} in one compound, so the tag sits within a few bytes
+     * before the array; -1 means "not found" and the height check simply stays disabled.
+     */
+    private static int readSectionY(byte[] data, int blocksTagPos) {
+        for (int k = blocksTagPos - 4; k >= Math.max(0, blocksTagPos - 40); k--) {
+            if ((data[k] & 0xFF) == 1 && data[k + 1] == 0 && data[k + 2] == 1
+                    && data[k + 3] == 'Y') {
+                int value = data[k + 4];
+                return value < 0 ? value + 256 : value;
+            }
+        }
+        return -1;
     }
 
     private static int readInt(byte[] data, int offset) {
@@ -420,8 +447,10 @@ public final class BattleTowersRegionScanner {
         long sumX;
         long sumZ;
         int count;
+        int minY = -1;
+        int maxY = -1;
 
-        void add(int id, int x, int z) {
+        void add(int id, int x, int z, int y) {
             boolean tracked = true;
             switch (id) {
                 case BLOCK_COBBLE:
@@ -454,6 +483,10 @@ public final class BattleTowersRegionScanner {
                 sumX += x;
                 sumZ += z;
                 count++;
+                if (y >= 0) {
+                    minY = minY < 0 ? y : Math.min(minY, y);
+                    maxY = Math.max(maxY, y);
+                }
             }
         }
 
@@ -475,7 +508,17 @@ public final class BattleTowersRegionScanner {
             if (cobble >= MIN_COBBLE) {
                 return "cobblestone";
             }
+            if (sandstone >= MIN_SANDSTONE && height() >= MIN_TOWER_HEIGHT) {
+                return "sandstone";
+            }
+            if (ice >= MIN_ICE && height() >= MIN_TOWER_HEIGHT) {
+                return "ice";
+            }
             return null;
+        }
+
+        int height() {
+            return minY < 0 ? 0 : maxY - minY + 1;
         }
 
         int centerX() {
