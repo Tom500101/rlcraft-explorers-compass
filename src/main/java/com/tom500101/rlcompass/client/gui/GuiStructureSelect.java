@@ -24,10 +24,10 @@ import com.tom500101.rlcompass.network.PacketSearchRequest;
  * Structure picker shown when the compass is right-clicked.
  *
  * <p>Laid out on one translucent sheet: a header with the title and the filter box, an action column
- * on the left, and the scrollable structure catalog on the right. Sections are divided by 1px
- * hairlines only, so the list reads as a flat surface over the world. All the measurements are
- * derived from {@code width}/{@code height} so the screen reflows on any GUI scale instead of
- * assuming one fixed size.
+ * on the left, and the scrollable catalog on the right. There are no borders, separators or panels
+ * inside the sheet — the reference screen draws text and flat fills only, and every widget adds its
+ * own translucent layer. All the measurements are derived from {@code width}/{@code height} so the
+ * screen reflows on any GUI scale instead of assuming one fixed size.
  *
  * <p>The id list comes from the server (see {@code PacketOpenCompassGui}) because it depends on
  * which mods are installed and which ids the config blacklist removed. Picking an entry sends a
@@ -40,8 +40,8 @@ public class GuiStructureSelect extends GuiScreen {
     private static final int SORT_BUTTON_ID = 1;
     private static final int CANCEL_BUTTON_ID = 2;
 
-    private static final int RESULTS_HEADER_HEIGHT = 40;
-    private static final int SLOT_HEIGHT = 36;
+    private static final int RESULTS_HEADER_HEIGHT = 20;
+    private static final int SLOT_HEIGHT = 50;
     private static final int PANEL_GAP = 14;
 
     private final List<StructureSearchEntry> allEntries = new ArrayList<StructureSearchEntry>();
@@ -169,54 +169,43 @@ public class GuiStructureSelect extends GuiScreen {
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         int margin = getRootMargin();
         int headerTop = getHeaderTop();
-        int headerBottom = headerTop + getHeaderHeight();
         int sidePanelLeft = getSidePanelLeft();
-        int sidePanelRight = sidePanelLeft + getSidePanelWidth();
         int listLeft = getListLeft();
         int listTop = getListTop();
-        int listRight = getListRight();
-        int panelBottom = getPanelBottom();
 
-        // One translucent sheet for the whole screen. Sections are separated by 1px hairlines, not
-        // by framed panels: the world stays visible and there is exactly one surface depth.
+        // One translucent sheet for the whole screen; the reference screen has no panel borders,
+        // so the rows are the only thing that adds chrome on top of it.
         GuiTheme.drawBackdrop(width, height);
-        GuiTheme.hLine(margin, width - margin, headerBottom);
-        GuiTheme.vLine(sidePanelRight + PANEL_GAP / 2, listTop, panelBottom);
 
         selectionList.drawScreen(mouseX, mouseY, partialTicks);
-        GuiTheme.hLine(listLeft, listRight, listTop + RESULTS_HEADER_HEIGHT - 4);
 
         fontRenderer.drawStringWithShadow(I18n.format("gui.rlcompass.title"), margin + 12,
                 headerTop + 12, GuiTheme.TEXT);
         fontRenderer.drawString(I18n.format("gui.rlcompass.subtitle"), margin + 12, headerTop + 26,
-                GuiTheme.TEXT_MUTED);
+                GuiTheme.TEXT_INFO);
 
-        fontRenderer.drawString(I18n.format("gui.rlcompass.actions"), sidePanelLeft + 12, listTop + 12,
-                GuiTheme.ACCENT);
-        fontRenderer.drawString(I18n.format("gui.rlcompass.catalog"), listLeft + 12, listTop + 12,
-                GuiTheme.ACCENT);
         fontRenderer.drawString(
                 I18n.format("gui.rlcompass.count", selectionList.getEntryCount(), allEntries.size()),
-                listLeft + 12, listTop + 25, GuiTheme.TEXT_MUTED);
+                listLeft + 16, listTop + 4, GuiTheme.TEXT_INFO);
 
         // The @mod filter syntax does not fit in the header next to the box, so it lives under the
-        // action column. Wrapped so it cannot spill over the hairline on a narrow window.
+        // action column. Wrapped so it cannot spill over the list on a narrow window.
         fontRenderer.drawSplitString(I18n.format("gui.rlcompass.hint"), sidePanelLeft + 12,
-                listTop + 114, getSidePanelWidth() - 24, GuiTheme.TEXT_MUTED);
+                listTop + 114, getSidePanelWidth() - 24, GuiTheme.TEXT_HINT);
 
         if (allEntries.isEmpty()) {
-            fontRenderer.drawString(I18n.format("gui.rlcompass.empty"), listLeft + 12,
-                    listTop + RESULTS_HEADER_HEIGHT + 12, GuiTheme.TEXT_MUTED);
+            fontRenderer.drawString(I18n.format("gui.rlcompass.empty"), listLeft + 16,
+                    listTop + RESULTS_HEADER_HEIGHT + 6, GuiTheme.TEXT_INFO);
         } else if (selectionList.getEntryCount() == 0) {
-            fontRenderer.drawString(I18n.format("gui.rlcompass.noMatch"), listLeft + 12,
-                    listTop + RESULTS_HEADER_HEIGHT + 12, GuiTheme.TEXT_MUTED);
+            fontRenderer.drawString(I18n.format("gui.rlcompass.noMatch"), listLeft + 16,
+                    listTop + RESULTS_HEADER_HEIGHT + 6, GuiTheme.TEXT_INFO);
         }
 
         searchBox.drawTextBox();
         if (searchBox.getText().isEmpty()) {
             // Placeholder: the box has no room for a label above it at minimum header height.
             fontRenderer.drawString(I18n.format("gui.rlcompass.filter"), searchBox.x + 1,
-                    searchBox.y + 2, GuiTheme.TEXT_MUTED);
+                    searchBox.y + 2, GuiTheme.TEXT_HINT);
         }
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
@@ -469,7 +458,7 @@ public class GuiStructureSelect extends GuiScreen {
         // Visual box spans y-6 .. y+18, so +44 keeps the bottom inside the shortest header (74).
         searchBox.y = getHeaderTop() + 44;
 
-        selectionList.updateBounds(getListLeft() + 10, getListRight() - 10,
+        selectionList.updateBounds(getListLeft(), getListRight(),
                 getListTop() + RESULTS_HEADER_HEIGHT + 10, getPanelBottom() - 10);
     }
 

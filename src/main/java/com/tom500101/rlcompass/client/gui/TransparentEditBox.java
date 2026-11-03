@@ -5,13 +5,14 @@ import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiTextField;
 
 /**
- * Search field drawn flat on the compass sheet.
+ * Search field drawn as a flat translucent bar.
  *
  * <p>{@code GuiTextField} draws its own vanilla box, so the background drawing is disabled and the
- * chrome is painted here with a few pixels of padding around the text: a translucent fill and a 1px
- * hairline, which turns gold while the field has focus. The padding is why this class exposes visual
- * bounds: the clickable area is larger than the text area, otherwise players have to aim at a
- * 12px-tall strip to focus the field.
+ * chrome is painted here with a few pixels of padding around the text: one translucent fill, no
+ * border. Upstream's field has no focus ring either — the caret is the only focus cue.
+ *
+ * <p>The padding is why this class exposes visual bounds: the clickable area is larger than the text
+ * area, otherwise players have to aim at a 12px-tall strip to focus the field.
  */
 public class TransparentEditBox extends GuiTextField {
 
@@ -56,14 +57,8 @@ public class TransparentEditBox extends GuiTextField {
         if (!this.getVisible()) {
             return;
         }
-        int left = getVisualLeft();
-        int top = getVisualTop();
-        int right = getVisualRight();
-        int bottom = getVisualBottom();
-
-        Gui.drawRect(left, top, right, bottom, GuiTheme.FIELD);
-        GuiTheme.outline(left, top, right, bottom,
-                this.isFocused() ? GuiTheme.ACCENT : GuiTheme.BORDER);
+        Gui.drawRect(getVisualLeft(), getVisualTop(), getVisualRight(), getVisualBottom(),
+                GuiTheme.PANEL);
         super.drawTextBox();
     }
 }

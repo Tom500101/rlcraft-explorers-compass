@@ -7,6 +7,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiSlot;
 import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.resources.I18n;
 
 import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
@@ -17,20 +18,19 @@ import org.lwjgl.opengl.GL11;
  * <p>{@code GuiSlot} is used only for its scroll bookkeeping ({@code amountScrolled},
  * {@code bindAmountScrolled}, {@code getMaxScroll}); its own rendering is bypassed because the
  * vanilla slot blits selection sprites and draws scroll buttons we do not want. Rows are clipped
- * with an explicit scissor box so a partially visible row cannot bleed over the catalog header.
+ * with an explicit scissor box so a partially visible row cannot bleed over the screen header.
  *
- * <p>A row paints no box of its own: the screen sheet shows through, and only hover/selection add a
- * translucent overlay ({@link GuiTheme#ROW_HOVER} / {@link GuiTheme#ROW_SELECTED}) plus a 2px gold
- * bar on the selected row. Rows are separated by a 1px hairline instead of a border, which is what
- * makes the list read as one continuous sheet rather than a stack of cards.
+ * <p>A row draws no box, border or separator: the screen sheet shows through and only the selected
+ * row stacks {@link GuiTheme#ROW_SELECTED} on top, exactly like the reference screen where the list
+ * is text on a dimmed world. Three lines per row (name / source / id) with the same 10px leading the
+ * reference uses, which is why the row is 50px tall.
  */
 public class StructureSearchList extends GuiSlot {
 
     private static final long DOUBLE_CLICK_MS = 250L;
-    private static final int SELECTION_BAR_WIDTH = 2;
-    /** Every name starts in the same column, so the +/- marker never shifts the text. */
+    /** Names start here; the +/- marker sits in the gutter to the left of it. */
     private static final int ROW_TEXT_LEFT = 16;
-    private static final int VARIANT_INDENT = 12;
+    private static final int VARIANT_INDENT = 10;
 
     private final GuiStructureSelect parent;
     private final List<StructureSearchEntry> entries = new ArrayList<StructureSearchEntry>();
@@ -149,7 +149,7 @@ public class StructureSearchList extends GuiSlot {
 
     @Override
     protected int getScrollBarX() {
-        return this.right - GuiTheme.SCROLLBAR_WIDTH - 2;
+        return this.right - GuiTheme.SCROLLBAR_WIDTH;
     }
 
     @Override
@@ -159,7 +159,7 @@ public class StructureSearchList extends GuiSlot {
         }
         StructureSearchEntry entry = entries.get(slotIndex);
         // The marker is a separate hit target: single click toggles, double click still searches.
-        if (entry.isExpandable() && !isDoubleClick && mouseX < this.left + 18) {
+        if (entry.isExpandable() && !isDoubleClick && mouseX < this.left + 16) {
             parent.toggleExpansion(entry);
             return;
         }
@@ -206,39 +206,30 @@ public class StructureSearchList extends GuiSlot {
                             float partialTicks) {
         StructureSearchEntry entry = entries.get(slotIndex);
         boolean selected = slotIndex == selectedIndex;
-        int rowRight = this.right - GuiTheme.SCROLLBAR_WIDTH - 6;
+        int rowRight = this.right - GuiTheme.SCROLLBAR_WIDTH;
         int rowBottom = yPos + heightIn;
-        boolean hovered = mouseYIn >= this.top && mouseYIn < this.bottom
-                && mouseXIn >= this.left && mouseXIn < rowRight
-                && mouseYIn >= yPos && mouseYIn < rowBottom;
 
-        // Selection first, so the hover overlay never stacks on top of it.
+        // The only row chrome: a selected row stacks the 25% overlay on the screen sheet.
         if (selected) {
             Gui.drawRect(this.left, yPos, rowRight, rowBottom, GuiTheme.ROW_SELECTED);
-            Gui.drawRect(this.left, yPos, this.left + SELECTION_BAR_WIDTH, rowBottom, GuiTheme.ACCENT);
-        } else if (hovered) {
-            Gui.drawRect(this.left, yPos, rowRight, rowBottom, GuiTheme.ROW_HOVER);
         }
 
-        int textLeft = this.left + ROW_TEXT_LEFT;
+        int textLeft = this.left + ROW_TEXT_LEFT + (entry.getVariantId() != null ? VARIANT_INDENT : 0);
         if (entry.isExpandable()) {
             this.mc.fontRenderer.drawStringWithShadow(entry.isExpanded() ? "-" : "+",
-                    this.left + 5, yPos + 6, GuiTheme.ACCENT);
-        }
-        if (entry.getVariantId() != null) {
-            textLeft += VARIANT_INDENT;
+                    this.left + 5, yPos + 11, GuiTheme.TEXT);
         }
 
-        int textLimit = rowRight - 6 - textLeft;
+        int textLimit = rowRight - 8 - textLeft;
         this.mc.fontRenderer.drawStringWithShadow(
                 trim(entry.getDisplayName(), textLimit),
-                textLeft, yPos + 6, selected ? GuiTheme.ACCENT : GuiTheme.TEXT);
-        // Both halves are identifiers, so no translation wrapper: the separator is the label.
+                textLeft, yPos + 11, GuiTheme.TEXT);
         this.mc.fontRenderer.drawStringWithShadow(
-                trim(entry.getSource() + "  |  " + entry.getStructureId(), textLimit),
-                textLeft, yPos + 20, GuiTheme.TEXT_MUTED);
-
-        GuiTheme.hLine(this.left + 8, rowRight, rowBottom - 1);
+                trim(I18n.format("gui.rlcompass.rowSource", entry.getSource()), textLimit),
+                textLeft, yPos + 21, GuiTheme.TEXT_INFO);
+        this.mc.fontRenderer.drawStringWithShadow(
+                trim(I18n.format("gui.rlcompass.rowId", entry.getStructureId()), textLimit),
+                textLeft, yPos + 31, GuiTheme.TEXT_INFO);
     }
 
     @Override
@@ -264,13 +255,14 @@ public class StructureSearchList extends GuiSlot {
         if (totalHeight <= viewport) {
             return;
         }
-        int barRight = this.right - 2;
+        int barRight = this.right;
         int barLeft = barRight - GuiTheme.SCROLLBAR_WIDTH;
         Gui.drawRect(barLeft, this.top, barRight, this.bottom, GuiTheme.SCROLL_TRACK);
 
-        int thumbHeight = Math.max(24, viewport * viewport / totalHeight);
-        int maxThumbTop = Math.max(0, viewport - thumbHeight);
+        int maxThumbHeight = Math.max(24, viewport - 8);
+        int thumbHeight = Math.min(maxThumbHeight, Math.max(32, viewport * viewport / totalHeight));
         int track = Math.max(1, totalHeight - viewport);
+        int maxThumbTop = Math.max(0, viewport - thumbHeight);
         int thumbTop = this.top + (int) (this.amountScrolled / (float) track * maxThumbTop);
         Gui.drawRect(barLeft, thumbTop, barRight, thumbTop + thumbHeight, GuiTheme.SCROLL_THUMB);
     }
