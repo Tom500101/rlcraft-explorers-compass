@@ -5,12 +5,13 @@ import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiTextField;
 
 /**
- * Search field wrapped in the compass palette.
+ * Search field drawn flat on the compass sheet.
  *
- * <p>{@code GuiTextField} draws its own vanilla box, so the background drawing is disabled and
- * the chrome is painted here with a few pixels of padding around the text. The padding is why
- * this class exposes visual bounds: the clickable area is larger than the text area, otherwise
- * players have to aim at a 12px-tall strip to focus the field.
+ * <p>{@code GuiTextField} draws its own vanilla box, so the background drawing is disabled and the
+ * chrome is painted here with a few pixels of padding around the text: a translucent fill and a 1px
+ * hairline, which turns gold while the field has focus. The padding is why this class exposes visual
+ * bounds: the clickable area is larger than the text area, otherwise players have to aim at a
+ * 12px-tall strip to focus the field.
  */
 public class TransparentEditBox extends GuiTextField {
 
@@ -60,9 +61,9 @@ public class TransparentEditBox extends GuiTextField {
         int right = getVisualRight();
         int bottom = getVisualBottom();
 
-        Gui.drawRect(left + 1, top + 1, right + 1, bottom + 1, CompassPalette.PANEL_SHADOW);
-        Gui.drawRect(left, top, right, bottom, CompassPalette.EDIT_BOX_FILL);
-        CompassPalette.drawOutline(left, top, right, bottom, CompassPalette.ACCENT);
+        Gui.drawRect(left, top, right, bottom, GuiTheme.FIELD);
+        GuiTheme.outline(left, top, right, bottom,
+                this.isFocused() ? GuiTheme.ACCENT : GuiTheme.BORDER);
         super.drawTextBox();
     }
 }

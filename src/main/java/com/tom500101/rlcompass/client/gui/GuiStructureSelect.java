@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Set;
 
 import net.minecraft.client.audio.PositionedSoundRecord;
-import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.resources.I18n;
@@ -24,10 +23,11 @@ import com.tom500101.rlcompass.network.PacketSearchRequest;
 /**
  * Structure picker shown when the compass is right-clicked.
  *
- * <p>Laid out as three framed panels over a dark backdrop: a header with the title and the filter
- * box, an action column on the left, and the scrollable structure catalog on the right. All the
- * measurements are derived from {@code width}/{@code height} so the screen reflows on any GUI
- * scale instead of assuming one fixed size.
+ * <p>Laid out on one translucent sheet: a header with the title and the filter box, an action column
+ * on the left, and the scrollable structure catalog on the right. Sections are divided by 1px
+ * hairlines only, so the list reads as a flat surface over the world. All the measurements are
+ * derived from {@code width}/{@code height} so the screen reflows on any GUI scale instead of
+ * assuming one fixed size.
  *
  * <p>The id list comes from the server (see {@code PacketOpenCompassGui}) because it depends on
  * which mods are installed and which ids the config blacklist removed. Picking an entry sends a
@@ -41,7 +41,7 @@ public class GuiStructureSelect extends GuiScreen {
     private static final int CANCEL_BUTTON_ID = 2;
 
     private static final int RESULTS_HEADER_HEIGHT = 40;
-    private static final int SLOT_HEIGHT = 44;
+    private static final int SLOT_HEIGHT = 36;
     private static final int PANEL_GAP = 14;
 
     private final List<StructureSearchEntry> allEntries = new ArrayList<StructureSearchEntry>();
@@ -177,53 +177,46 @@ public class GuiStructureSelect extends GuiScreen {
         int listRight = getListRight();
         int panelBottom = getPanelBottom();
 
-        CompassPalette.drawFramedPanel(margin / 2, margin / 2, width - margin / 2, height - margin / 2);
-        CompassPalette.drawFramedPanel(margin, headerTop, width - margin, headerBottom);
-        CompassPalette.drawFramedPanel(sidePanelLeft, listTop, sidePanelRight, panelBottom);
-        CompassPalette.drawFramedPanel(listLeft, listTop, listRight, panelBottom);
-
-        CompassPalette.drawAccentRule(margin + 12, headerBottom - 12, width - margin - 12);
+        // One translucent sheet for the whole screen. Sections are separated by 1px hairlines, not
+        // by framed panels: the world stays visible and there is exactly one surface depth.
+        GuiTheme.drawBackdrop(width, height);
+        GuiTheme.hLine(margin, width - margin, headerBottom);
+        GuiTheme.vLine(sidePanelRight + PANEL_GAP / 2, listTop, panelBottom);
 
         selectionList.drawScreen(mouseX, mouseY, partialTicks);
+        GuiTheme.hLine(listLeft, listRight, listTop + RESULTS_HEADER_HEIGHT - 4);
 
-        // Results header sits on top of the list so rows scroll underneath it.
-        Gui.drawRect(listLeft + 1, listTop + 1, listRight - 1,
-                listTop + RESULTS_HEADER_HEIGHT, CompassPalette.PANEL_FILL);
-        Gui.drawRect(listLeft + 1, listTop + RESULTS_HEADER_HEIGHT - 1,
-                listRight - 1, listTop + RESULTS_HEADER_HEIGHT, CompassPalette.PANEL_BORDER);
-
-        fontRenderer.drawString(I18n.format("gui.rlcompass.title"), margin + 12, headerTop + 8,
-                CompassPalette.TEXT);
-        fontRenderer.drawString(I18n.format("gui.rlcompass.subtitle"), margin + 12, headerTop + 22,
-                CompassPalette.MUTED_TEXT);
+        fontRenderer.drawStringWithShadow(I18n.format("gui.rlcompass.title"), margin + 12,
+                headerTop + 12, GuiTheme.TEXT);
+        fontRenderer.drawString(I18n.format("gui.rlcompass.subtitle"), margin + 12, headerTop + 26,
+                GuiTheme.TEXT_MUTED);
 
         fontRenderer.drawString(I18n.format("gui.rlcompass.actions"), sidePanelLeft + 12, listTop + 12,
-                CompassPalette.ACCENT);
-        // The @mod filter syntax does not fit in the header next to the box, so it lives here.
-        fontRenderer.drawString(I18n.format("gui.rlcompass.hint"), sidePanelLeft + 12, listTop + 100,
-                CompassPalette.MUTED_TEXT);
-        // Variants marked ≈ are labels, not filters: the mod rolls the theme while generating.
-        fontRenderer.drawString(I18n.format("gui.rlcompass.hint.variant"), sidePanelLeft + 12,
-                listTop + 112, CompassPalette.MUTED_TEXT);
+                GuiTheme.ACCENT);
         fontRenderer.drawString(I18n.format("gui.rlcompass.catalog"), listLeft + 12, listTop + 12,
-                CompassPalette.ACCENT);
+                GuiTheme.ACCENT);
         fontRenderer.drawString(
                 I18n.format("gui.rlcompass.count", selectionList.getEntryCount(), allEntries.size()),
-                listLeft + 12, listTop + 26, CompassPalette.MUTED_TEXT);
+                listLeft + 12, listTop + 25, GuiTheme.TEXT_MUTED);
+
+        // The @mod filter syntax does not fit in the header next to the box, so it lives under the
+        // action column. Wrapped so it cannot spill over the hairline on a narrow window.
+        fontRenderer.drawSplitString(I18n.format("gui.rlcompass.hint"), sidePanelLeft + 12,
+                listTop + 114, getSidePanelWidth() - 24, GuiTheme.TEXT_MUTED);
 
         if (allEntries.isEmpty()) {
             fontRenderer.drawString(I18n.format("gui.rlcompass.empty"), listLeft + 12,
-                    listTop + RESULTS_HEADER_HEIGHT + 12, CompassPalette.MUTED_TEXT);
+                    listTop + RESULTS_HEADER_HEIGHT + 12, GuiTheme.TEXT_MUTED);
         } else if (selectionList.getEntryCount() == 0) {
             fontRenderer.drawString(I18n.format("gui.rlcompass.noMatch"), listLeft + 12,
-                    listTop + RESULTS_HEADER_HEIGHT + 12, CompassPalette.MUTED_TEXT);
+                    listTop + RESULTS_HEADER_HEIGHT + 12, GuiTheme.TEXT_MUTED);
         }
 
         searchBox.drawTextBox();
         if (searchBox.getText().isEmpty()) {
             // Placeholder: the box has no room for a label above it at minimum header height.
             fontRenderer.drawString(I18n.format("gui.rlcompass.filter"), searchBox.x + 1,
-                    searchBox.y + 2, CompassPalette.MUTED_TEXT);
+                    searchBox.y + 2, GuiTheme.TEXT_MUTED);
         }
         super.drawScreen(mouseX, mouseY, partialTicks);
     }

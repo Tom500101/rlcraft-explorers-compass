@@ -3,7 +3,6 @@ item.rlcompass.explorers_compass.name=探险者指南针
 gui.rlcompass.title=探险者指南针
 gui.rlcompass.subtitle=搜索你附近的结构
 gui.rlcompass.hint=输入即筛选 | @模组名 按来源筛选
-gui.rlcompass.hint.variant=≈ = 主题随机，无法检索
 gui.rlcompass.filter=筛选结果
 gui.rlcompass.actions=操作
 gui.rlcompass.catalog=结构目录
@@ -14,8 +13,6 @@ gui.rlcompass.search=搜索
 gui.rlcompass.sortBy=排序: %s
 gui.rlcompass.sortName=名称
 gui.rlcompass.sortSource=来源
-gui.rlcompass.rowSource=来源: %s
-gui.rlcompass.rowId=ID: %s
 
 # 搜索无结果时的聊天提示
 rlcompass.search.notFound=搜索范围内没有找到 %s
