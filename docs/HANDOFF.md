@@ -162,3 +162,19 @@
 - **实现**：`DoomlikeLocator` 反射 `SpatialHash.randomFromSeed` 与 `BiomeSets.getTheme`，按生成顺序重放；变体名与 `Theme.name`（即配置文件 `xxx.cfg`）归一化后比对，命中标 `variantConfirmed=true`。
 - **UI**：Doomlike 变体的 `≈` 已去掉（与 Roguelike 一致），现在是真过滤。
 - **限制**：`isDungeonCenter` 每个候选都要 `getBiome`，预算仍是 20000 chunk；主题只在 `isDungeonCenter` 命中后才重放。
+
+## 6. 原版结构变体（2026-11-03）
+
+- **`minecraft:temple` 三类**：`MapGenScatteredFeature.Start` 的构造器按 biome 分支——
+  `DESERT`/`DESERT_HILLS` → 沙漠神殿，`JUNGLE`/`JUNGLE_HILLS` → 丛林神庙，`SWAMPLAND` → 女巫小屋。
+  生成时用的就是这个 biome，事后读同一个 biome 不可能判错，不需要重放随机或方块指纹。
+- **`minecraft:village` 五类**：村庄没有类型字段，`StructureVillagePieces.getBiomeSpecificBlockState`
+  按 biome 替换建材，所以样式同样是 biome 的纯函数。按 biome 名归为
+  plains / desert / savanna / taiga / snowy 五档，其余落到 plains（与原版一致）。
+- **实现**：`TempleLocator` / `VillageLocator` 继承 `MapGenLocator`，只覆写 `getVariants` 与五参 `findNearest`。
+  难点是 `getNearestStructurePos` 只返回**最近一个**结构：类型不符时必须继续往外找。
+  做法是从玩家出发，找到最近的结构后沿「玩家 → 该结构」方向再推 48 格（村庄 64 格）作为新的搜索原点，
+  重复最多 12 次；每次都用 `radius` 复核，越界即停。
+- **无变体的原版结构**：`stronghold` / `monument` / `mansion` / `mineshaft` 都只有一种形态，保持父项即可。
+- **变体 id**：`minecraft:temple/desert`、`minecraft:temple/jungle`、`minecraft:temple/witch_hut`；
+  `minecraft:village/plains|desert|savanna|taiga|snowy`。命中一律标 `variantConfirmed=true`。

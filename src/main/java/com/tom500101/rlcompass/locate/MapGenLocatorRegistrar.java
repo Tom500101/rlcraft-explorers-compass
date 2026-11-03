@@ -5,6 +5,8 @@ import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.locate.impl.MapGenLocator;
 import com.tom500101.rlcompass.locate.impl.MineshaftLocator;
+import com.tom500101.rlcompass.locate.impl.TempleLocator;
+import com.tom500101.rlcompass.locate.impl.VillageLocator;
 
 /**
  * Registers the standard {@code MapGenStructure} adapters.
@@ -37,6 +39,12 @@ public final class MapGenLocatorRegistrar {
                 // Vanilla's own mineshaft search blocks the server thread for ~9 s; see
                 // MineshaftLocator for the reproduction of why and the bounded replacement.
                 registry.register(new MineshaftLocator(row[0], row[1], row[2]));
+            } else if ("minecraft:temple".equals(row[2])) {
+                // Three flavours, decided by the biome the generator picked.
+                registry.register(new TempleLocator(row[0], row[1]));
+            } else if ("minecraft:village".equals(row[2])) {
+                // Five visual styles, likewise biome-derived.
+                registry.register(new VillageLocator(row[0], row[1]));
             } else {
                 registry.register(new MapGenLocator(row[0], row[1], row[2]));
             }
