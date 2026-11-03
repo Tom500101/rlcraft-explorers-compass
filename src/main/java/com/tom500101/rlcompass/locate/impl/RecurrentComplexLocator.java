@@ -335,54 +335,16 @@ public class RecurrentComplexLocator implements IStructureLocator {
 
     // -------------------------------------------------------------- suggestions
 
-    /**
-     * A place worth walking to when nothing is on record: the nearest chunk on a coarse grid whose
-     * biome the structure accepts, skipping anything already searched.
-     *
-     * <p>This is deliberately *not* called a prediction. RC decides the actual spot from the chunk's
-     * decoration random, which cannot be reproduced; what is reproducible is the eligibility — the
-     * biome and dimension filters the generator applies. So the answer is "this area can host it,
-     * and you have not checked it yet", which is exactly what a sweep needs.
-     */
     private StructureResult suggest(World world, BlockPos playerPos, int radius, String structureId) {
-        List<String> expressions = biomeExpressions(structureId);
-        if (expressions == null || expressions.isEmpty()) {
+        BlockPos candidate = UltraRarePredictor.suggest(world, playerPos, radius, structureId,
+                SearchMemory.get(world));
+        if (candidate == null) {
             return null;
         }
-        SearchMemory memory = SearchMemory.get(world);
-        int centerChunkX = playerPos.getX() >> 4;
-        int centerChunkZ = playerPos.getZ() >> 4;
-        int maxRing = Math.max(1, (radius >> 4) / SUGGEST_STEP + 1);
-        double maxDistanceSq = (double) radius * (double) radius;
-        for (int ring = 0; ring <= maxRing; ring++) {
-            for (int dx = -ring; dx <= ring; dx++) {
-                for (int dz = -ring; dz <= ring; dz++) {
-                    if (Math.abs(dx) != ring && Math.abs(dz) != ring) {
-                        continue;
-                    }
-                    int chunkX = centerChunkX + dx * SUGGEST_STEP;
-                    int chunkZ = centerChunkZ + dz * SUGGEST_STEP;
-                    BlockPos candidate = new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
-                    if (StructureResult.horizontalDistanceSq(candidate, playerPos) > maxDistanceSq) {
-                        continue;
-                    }
-                    if (memory != null && memory.isKnown(structureId, candidate)) {
-                        continue;
-                    }
-                    if (!biomeMatches(world.getBiome(candidate), expressions)) {
-                        continue;
-                    }
-                    if (memory != null) {
-                        memory.remember(structureId, candidate);
-                    }
-                    LOG.info("[RC] suggested search area for '{}' at ({}, {}); biome matches, not visited",
-                            structureId, candidate.getX(), candidate.getZ());
-                    return new StructureResult(STRUCTURE_ID, candidate,
-                            sourceName() + " (suggested)", StructureResult.horizontalDistanceSq(candidate, playerPos));
-                }
-            }
-        }
-        return null;
+        LOG.info("[RC] suggested search area for '{}' at ({}, {})", structureId, candidate.getX(),
+                candidate.getZ());
+        return new StructureResult(STRUCTURE_ID, candidate, sourceName() + " (suggested)",
+                StructureResult.horizontalDistanceSq(candidate, playerPos));
     }
 
     /** Moves NEW candidates the player is standing on to FOUND or MISSING, using the records. */
@@ -401,152 +363,6 @@ public class RecurrentComplexLocator implements IStructureLocator {
                 confirmed.add(record.center);
             }
         }
-        memory.settleNear(structureId, playerPos, SETTLE_NEAR, confirmed, SETTLE_CONFIRM);
+        memory.settleNear(structureId, playerPos, 48, confirmed, 64);
     }
-
-    /** {@code true} when at least one of the generator's biome alternatives accepts this biome. */
-    private static boolean biomeMatches(Biome biome, List<String> expressions) {
-        if (biome == null) {
-            return false;
-        }
-        for (String expression : expressions) {
-            if (matchesExpression(biome, expression)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Handles the subset of RC's matcher syntax that appears in structure files: {@code &}, {@code |}, {@code !}, {@code $TAG}. */
-    private static boolean matchesExpression(Biome biome, String expression) {
-        if (expression == null || expression.trim().isEmpty()) {
-            return true;
-        }
-        for (String alternative : expression.split("\\|")) {
-            if (matchesConjunction(biome, alternative)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean matchesConjunction(Biome biome, String expression) {
-        boolean any = false;
-        for (String raw : expression.split("&")) {
-            String token = raw.trim();
-            if (token.isEmpty()) {
-                continue;
-            }
-            any = true;
-            boolean negate = token.startsWith("!");
-            if (negate) {
-                token = token.substring(1).trim();
-            }
-            boolean hit;
-            if (token.startsWith("$")) {
-                BiomeDictionary.Type type = BiomeDictionary.Type.getType(
-                        token.substring(1).toUpperCase(Locale.ROOT));
-                hit = type != null && BiomeDictionary.hasType(biome, type);
-            } else {
-                String path = biome.getRegistryName() == null ? ""
-                        : biome.getRegistryName().toString().toLowerCase(Locale.ROOT);
-                String wanted = token.toLowerCase(Locale.ROOT);
-                hit = path.equals(wanted) || path.endsWith(":" + wanted);
-            }
-            if (hit == negate) {
-                return false;
-            }
-        }
-        return any;
-    }
-
-    /** Biome alternatives declared by the structure's own generation infos, cached per id. */
-    private static List<String> biomeExpressions(String structureId) {
-        synchronized (BIOME_CACHE) {
-            if (BIOME_CACHE.containsKey(structureId)) {
-                return BIOME_CACHE.get(structureId);
-            }
-        }
-        List<String> out = new ArrayList<String>();
-        File file = structureFile(structureId);
-        if (file != null && file.isFile()) {
-            try {
-                ZipFile zip = new ZipFile(file);
-                try {
-                    ZipEntry entry = zip.getEntry("structure.json");
-                    if (entry != null) {
-                        String json = new String(readAll(zip.getInputStream(entry)),
-                                StandardCharsets.UTF_8);
-                        int index = 0;
-                        while ((index = json.indexOf("\"biomes\"", index)) >= 0) {
-                            int start = json.indexOf('"', index + 8);
-                            int end = start < 0 ? -1 : json.indexOf('"', start + 1);
-                            if (start < 0 || end < 0) {
-                                break;
-                            }
-                            String expression = json.substring(start + 1, end);
-                            if (!expression.trim().isEmpty()) {
-                                out.add(expression);
-                            }
-                            index = end + 1;
-                        }
-                    }
-                } finally {
-                    zip.close();
-                }
-            } catch (Throwable t) {
-                LOG.warn("[RC] could not read biome filters of {}: {}", structureId, t.toString());
-            }
-        }
-        synchronized (BIOME_CACHE) {
-            BIOME_CACHE.put(structureId, out);
-        }
-        return out;
-    }
-
-    private static byte[] readAll(java.io.InputStream stream) throws java.io.IOException {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        byte[] buffer = new byte[4096];
-        int read;
-        while ((read = stream.read(buffer)) > 0) {
-            out.write(buffer, 0, read);
-        }
-        return out.toByteArray();
-    }
-
-    /** Finds the pack file that defines {@code structureId}; names are unique in practice. */
-    private static File structureFile(String structureId) {
-        synchronized (FILES) {
-            if (FILES.isEmpty()) {
-                File directory = activeStructureDirectory();
-                if (directory != null) {
-                    collectFiles(directory, FILES);
-                }
-            }
-            return FILES.get(structureId.toLowerCase(Locale.ROOT));
-        }
-    }
-
-    private static void collectFiles(File dir, Map<String, File> out) {
-        File[] files = dir.listFiles();
-        if (files == null) {
-            return;
-        }
-        for (File file : files) {
-            if (file.isDirectory()) {
-                collectFiles(file, out);
-            } else if (file.getName().toLowerCase(Locale.ROOT).endsWith(STRUCTURE_EXTENSION)) {
-                String id = file.getName().substring(0,
-                        file.getName().length() - STRUCTURE_EXTENSION.length());
-                out.put(id.toLowerCase(Locale.ROOT), file);
-            }
-        }
-    }
-
-    /** Grid step for suggestions, in chunks: 8 chunks = 128 blocks, a sane sweep resolution. */
-    private static final int SUGGEST_STEP = 8;
-    private static final int SETTLE_NEAR = 48;
-    private static final int SETTLE_CONFIRM = 64;
-    private static final Map<String, List<String>> BIOME_CACHE = new HashMap<String, List<String>>();
-    private static final Map<String, File> FILES = new HashMap<String, File>();
 }
