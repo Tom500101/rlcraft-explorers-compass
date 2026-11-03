@@ -122,6 +122,20 @@
 - **来源标记**：命中时 `source` 为 `BattleTowersScan`；三路来源（worldMap / positions file / scan）合并去重。
 - **限制**：只处理主世界（dim 0）；只认已保存的 chunk（未生成的区域本来也没有塔）；塔跨 chunk 时塔心取方块平均，误差约 1–2 格。
 
+### 4.1 按材质识别全部塔型 + 三个变体（2026-11-03）
+
+- **漏检一**：`TowerTypes.CobbleStone` 只用圆石、**没有苔石**。旧阈值要求 `mossy ≥ 250`，直接漏掉纯圆石塔。
+  实例：`(2311, 5031)`，cobble 820 / mossy 69，y 69–127（高 58 格的真塔）。
+- **漏检二**：`TowerTypes.Netherrack` 用 netherrack 墙 + nether brick 地板，旧扫描完全不认这两个 id。
+  实例：`(4839, 5655)`，netherrack 1127 / nether brick 101。
+- **修复**：
+  - 圆石类：`cobble ≥ 700`；苔石只用于区分 `cobblestonemossy`（≥200）与 `cobblestone`；
+  - 地狱岩类：以 `nether_brick ≥ 100` 作信号。只数 netherrack 不可行——自然岩浆区一个 chunk 就有 2783 块，全存档能误报出几十个「塔」；
+  - 去重从 24 格收到 16 格，且**不同材质不合并**：相邻的两座不同类型塔此前会被并成一座。
+- **变体**：新增 `Cobblestone Tower` / `Mossy Cobblestone Tower` / `Netherrack Tower`，变体搜索只认扫描结果（worldMap 与 positions 文件没有类型，不能硬猜）。
+- **暂未启用**：SandStone / Ice / Jungle / SmoothStone 四种。砂岩与冰在自己的生物群系里自然成片，直接按数量判定会大量误报，需要先做塔形校验（四角柱 + 中空）。
+- **全存档复扫**（64 region）：14 座，其中 cobblestone 4 座、cobblestonemossy 4 座、netherrack 6 座。
+
 ## 5. Doomlike：主题可重放（2026-11-03）
 
 - **旧结论作废**：此前认为「Doomlike 在生成时随机选主题、不落盘、无法检索」，并给变体加了 `≈`。反编译 `dldungeonsjbg-1.14.17` 后确认可以精确重放。

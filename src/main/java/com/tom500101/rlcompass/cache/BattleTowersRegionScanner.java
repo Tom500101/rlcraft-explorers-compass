@@ -22,10 +22,23 @@ import org.apache.logging.log4j.Logger;
  *
  * <p>Why this exists: when another mod replaces Battle Towers' generator (RLTweaker's
  * {@code Consistent Tower Generation}), the mod's in-memory {@code worldMap} stays empty and the
- * positions file is never written. The towers are still in the world, though, and they are
- * extremely recognisable: a 12x12 shell whose walls blend {@code cobblestone} with
- * {@code mossy_cobblestone} at roughly 1:1 over more than 40 blocks of height. A sampled tower had
- * 842 + 830 blocks; natural terrain and villages never come close.
+ * positions file is never written. The towers are still in the world, though, and each type has its
+ * own wall material — see {@code AS_WorldGenTower$TowerTypes}:
+ *
+ * <pre>
+ * CobbleStone        cobblestone                          (no mossy at all)
+ * CobbleStoneMossy   mossy_cobblestone + cobblestone
+ * SandStone          sandstone
+ * Ice                ice / packed_ice
+ * SmoothStone        stone
+ * Netherrack         netherrack + nether_brick floor
+ * Jungle             mossy_cobblestone + jungle wood
+ * </pre>
+ *
+ * <p>An earlier version only counted cobblestone + mossy_cobblestone and required 250 mossy, which
+ * silently dropped every plain {@code CobbleStone} tower and every {@code Netherrack} tower. The
+ * thresholds below are per material, and a hit carries its type so the picker can offer real
+ * variants.
  *
  * <p>Reading the region files directly (instead of calling {@code World.getBlockState}) means no
  * chunk loading, no terrain generation and no main-thread stalls beyond the file I/O itself.
@@ -40,26 +53,56 @@ public final class BattleTowersRegionScanner {
 
     private static final Logger LOG = LogManager.getLogger("rlcompass");
 
+    private static final int BLOCK_COBBLE = 4;
+    private static final int BLOCK_MOSSY = 48;
+    private static final int BLOCK_SANDSTONE = 24;
+    private static final int BLOCK_ICE = 79;
+    private static final int BLOCK_PACKED_ICE = 174;
+    private static final int BLOCK_NETHERRACK = 87;
+    private static final int BLOCK_NETHER_BRICK = 112;
+
     /**
-     * Wall composition of a real tower. A sampled save produced seven 200/200 hits, of which three
-     * were villages near spawn (cobble 286-404); every real tower had 700+ cobblestone and 250+
-     * mossy. The tighter floor keeps all four towers and drops the villages.
+     * Per-material floors. Cobblestone excludes village smithies (286-404 blocks); a real tower has
+     * 700+. Netherrack never occurs in a tower-sized cluster outside the Nether, so it is a strong
+     * signal on its own — a sampled nether tower had hundreds of netherrack with a nether-brick
+     * floor.
      */
-    private static final int MIN_COBBLE = 600;
-    private static final int MIN_MOSSY = 250;
-    /** Two hits closer than this on both axes are the same tower (one tower spans 1-4 chunks). */
-    private static final int MERGE_DISTANCE = 24;
+    private static final int MIN_COBBLE = 700;
+    private static final int MIN_MOSSY = 200;
+    /**
+     * Netherrack occurs naturally in tower-sized amounts (a lava-field chunk held 2783 blocks), so
+     * the material alone cannot identify a tower. The nether-brick floor can: on the overworld it
+     * only comes from these towers, and a sampled tower had 101-139 bricks.
+     */
+    private static final int MIN_NETHER_BRICK = 100;
+    /**
+     * Same-type hits closer than this are one tower (a tower spans 1-4 chunks, centres within ~8
+     * blocks). Different types are never merged: two towers of different materials can stand next
+     * to each other, and the old 24-block merge kept only one of them.
+     */
+    private static final int MERGE_DISTANCE = 16;
 
     private static final Map<String, Cache> CACHES = new HashMap<String, Cache>();
 
     private BattleTowersRegionScanner() {
     }
 
+    /** One tower found on disk: where it stands and which material family it belongs to. */
+    public static final class TowerHit {
+        public final BlockPos pos;
+        public final String type;
+
+        TowerHit(BlockPos pos, String type) {
+            this.pos = pos;
+            this.type = type;
+        }
+    }
+
     /**
-     * Towers recorded in the save's region files, as block positions with {@code y=64}. Blocks the
-     * caller until a scan finishes, so only search should use it.
+     * Towers recorded in the save's region files. Blocks the caller until a scan finishes, so only
+     * search should use it.
      */
-    public static List<BlockPos> scan(World world) {
+    public static List<TowerHit> scan(World world) {
         File regionDir = regionDirectory(world);
         if (regionDir == null || !regionDir.isDirectory()) {
             return Collections.emptyList();
@@ -71,14 +114,14 @@ public final class BattleTowersRegionScanner {
      * Cached towers without waiting for a scan. Used by {@code canAnswer}, which runs every time the
      * picker opens — a synchronous scan there cost 2-3 s on a 64-region save.
      */
-    public static List<BlockPos> peek(World world) {
+    public static List<TowerHit> peek(World world) {
         File regionDir = regionDirectory(world);
         if (regionDir == null) {
             return Collections.emptyList();
         }
         synchronized (CACHES) {
             Cache cache = CACHES.get(regionDir.getAbsolutePath());
-            return cache == null ? Collections.<BlockPos>emptyList() : cache.current();
+            return cache == null ? Collections.<TowerHit>emptyList() : cache.current();
         }
     }
 
@@ -163,7 +206,7 @@ public final class BattleTowersRegionScanner {
     private static final class Cache {
         private final Map<String, Long> stamps = new HashMap<String, Long>();
         /** Written by the scanner thread, read lock-free by the picker. */
-        private volatile List<BlockPos> towers = Collections.emptyList();
+        private volatile List<TowerHit> towers = Collections.emptyList();
         private volatile boolean scanned;
         private volatile boolean scanning;
 
@@ -176,11 +219,11 @@ public final class BattleTowersRegionScanner {
         }
 
         /** Latest result; never waits for an in-flight scan. */
-        List<BlockPos> current() {
+        List<TowerHit> current() {
             return towers;
         }
 
-        synchronized List<BlockPos> refresh(File regionDir) {
+        synchronized List<TowerHit> refresh(File regionDir) {
             File[] files = regionDir.listFiles();
             if (files == null || scanning) {
                 return towers;
@@ -202,7 +245,7 @@ public final class BattleTowersRegionScanner {
             }
             scanning = true;
             try {
-                List<BlockPos> found = new ArrayList<BlockPos>();
+                List<TowerHit> found = new ArrayList<TowerHit>();
                 for (File file : files) {
                     if (file.getName().endsWith(".mca")) {
                         scanRegion(file, found);
@@ -219,7 +262,7 @@ public final class BattleTowersRegionScanner {
         }
     }
 
-    private static void scanRegion(File file, List<BlockPos> out) {
+    private static void scanRegion(File file, List<TowerHit> out) {
         String[] parts = file.getName().split("\\.");
         if (parts.length < 4) {
             return;
@@ -246,12 +289,16 @@ public final class BattleTowersRegionScanner {
                     }
                     Stats stats = new Stats();
                     scanBlocks(readAll(in), stats);
-                    if (stats.cobble >= MIN_COBBLE && stats.mossy >= MIN_MOSSY) {
-                        int chunkX = regionX * 32 + x;
-                        int chunkZ = regionZ * 32 + z;
-                        out.add(new BlockPos(chunkX * 16 + stats.centerX(), 64,
-                                chunkZ * 16 + stats.centerZ()));
+                    String type = stats.detectType();
+                    if (type == null) {
+                        continue;
                     }
+                    int chunkX = regionX * 32 + x;
+                    int chunkZ = regionZ * 32 + z;
+                    out.add(new TowerHit(
+                            new BlockPos(chunkX * 16 + stats.centerX(), 64,
+                                    chunkZ * 16 + stats.centerZ()),
+                            type));
                 }
             }
         } catch (Throwable t) {
@@ -299,12 +346,7 @@ public final class BattleTowersRegionScanner {
             }
             int base = i + 13;
             for (int j = 0; j < 4096; j++) {
-                int id = data[base + j] & 0xFF;
-                if (id == 4) {
-                    stats.addCobble(j & 15, (j >> 4) & 15);
-                } else if (id == 48) {
-                    stats.addMossy(j & 15, (j >> 4) & 15);
-                }
+                stats.add(data[base + j] & 0xFF, j & 15, (j >> 4) & 15);
             }
             i = base + 4095;
         }
@@ -317,20 +359,21 @@ public final class BattleTowersRegionScanner {
                 | (data[offset + 3] & 0xFF);
     }
 
-    /** Collapses the 1-4 chunks a single tower spans into one position. */
-    private static List<BlockPos> merge(List<BlockPos> raw) {
-        List<BlockPos> out = new ArrayList<BlockPos>();
-        for (BlockPos pos : raw) {
+    /** Collapses the 1-4 chunks a single tower spans, but never merges different materials. */
+    private static List<TowerHit> merge(List<TowerHit> raw) {
+        List<TowerHit> out = new ArrayList<TowerHit>();
+        for (TowerHit hit : raw) {
             boolean duplicate = false;
-            for (BlockPos kept : out) {
-                if (Math.abs(kept.getX() - pos.getX()) <= MERGE_DISTANCE
-                        && Math.abs(kept.getZ() - pos.getZ()) <= MERGE_DISTANCE) {
+            for (TowerHit kept : out) {
+                if (kept.type.equals(hit.type)
+                        && Math.abs(kept.pos.getX() - hit.pos.getX()) <= MERGE_DISTANCE
+                        && Math.abs(kept.pos.getZ() - hit.pos.getZ()) <= MERGE_DISTANCE) {
                     duplicate = true;
                     break;
                 }
             }
             if (!duplicate) {
-                out.add(pos);
+                out.add(hit);
             }
         }
         return out;
@@ -339,22 +382,63 @@ public final class BattleTowersRegionScanner {
     private static final class Stats {
         int cobble;
         int mossy;
+        int netherrack;
+        int netherBrick;
+        int sandstone;
+        int ice;
         long sumX;
         long sumZ;
         int count;
 
-        void addCobble(int x, int z) {
-            cobble++;
-            sumX += x;
-            sumZ += z;
-            count++;
+        void add(int id, int x, int z) {
+            boolean tracked = true;
+            switch (id) {
+                case BLOCK_COBBLE:
+                    cobble++;
+                    break;
+                case BLOCK_MOSSY:
+                    mossy++;
+                    break;
+                case BLOCK_NETHERRACK:
+                    netherrack++;
+                    break;
+                case BLOCK_NETHER_BRICK:
+                    netherBrick++;
+                    break;
+                case BLOCK_SANDSTONE:
+                    sandstone++;
+                    break;
+                case BLOCK_ICE:
+                case BLOCK_PACKED_ICE:
+                    ice++;
+                    break;
+                default:
+                    tracked = false;
+                    break;
+            }
+            if (tracked) {
+                sumX += x;
+                sumZ += z;
+                count++;
+            }
         }
 
-        void addMossy(int x, int z) {
-            mossy++;
-            sumX += x;
-            sumZ += z;
-            count++;
+        /**
+         * Material family, or {@code null} when this chunk holds no tower. Sandstone and ice are
+         * deliberately not enabled yet: both occur naturally in tower-sized amounts in their own
+         * biomes, so they need a shape check first.
+         */
+        String detectType() {
+            if (netherBrick >= MIN_NETHER_BRICK) {
+                return "netherrack";
+            }
+            if (cobble >= MIN_COBBLE && mossy >= MIN_MOSSY) {
+                return "cobblestonemossy";
+            }
+            if (cobble >= MIN_COBBLE) {
+                return "cobblestone";
+            }
+            return null;
         }
 
         int centerX() {

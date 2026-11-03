@@ -18,6 +18,7 @@ import com.tom500101.rlcompass.cache.BattleTowersPositionsFile;
 import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
+import com.tom500101.rlcompass.locate.StructureVariant;
 import com.tom500101.rlcompass.util.Reflect;
 import com.tom500101.rlcompass.util.StructureNameUtil;
 
@@ -120,19 +121,75 @@ public class BattleTowersLocator implements IStructureLocator {
 
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
-        List<BlockPos> live = collectFromWorldMap(world);
-        List<BlockPos> file = BattleTowersPositionsFile.read(world);
-        List<BlockPos> scanned = BattleTowersRegionScanner.scan(world);
-        String source;
-        if (!scanned.isEmpty()) {
-            source = "BattleTowersScan";
-        } else if (live.isEmpty()) {
-            source = file.isEmpty() ? sourceName() : "BattleTowersFile";
-        } else {
-            source = file.isEmpty() ? sourceName() : sourceName() + "+BattleTowersFile";
+        return nearest(world, playerPos, radius, null);
+    }
+
+    @Override
+    public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
+                                       String variantId) {
+        return nearest(world, playerPos, radius, variantId);
+    }
+
+    /**
+     * Region-file hits carry a material family, so a themed search can filter on it. The live map
+     * and the positions file have no type at all, so they only answer parent searches — otherwise a
+     * typed result would be a guess.
+     */
+    private StructureResult nearest(World world, BlockPos playerPos, int radius, String variantId) {
+        String wanted = variantId == null ? null : variantSuffix(variantId);
+        double maxDistanceSq = (double) radius * (double) radius;
+        StructureResult best = null;
+
+        for (BattleTowersRegionScanner.TowerHit hit : BattleTowersRegionScanner.scan(world)) {
+            if (wanted != null && !wanted.equals(hit.type)) {
+                continue;
+            }
+            double distanceSq = StructureResult.horizontalDistanceSq(hit.pos, playerPos);
+            if (distanceSq > maxDistanceSq) {
+                continue;
+            }
+            if (best == null || distanceSq < best.getDistanceSq()) {
+                best = new StructureResult(STRUCTURE_ID, hit.pos, "BattleTowersScan", distanceSq);
+            }
         }
-        return StructureResult.nearestOf(STRUCTURE_ID, merge(merge(live, file), scanned),
-                playerPos, radius, source);
+        if (wanted == null) {
+            List<BlockPos> live = collectFromWorldMap(world);
+            List<BlockPos> file = BattleTowersPositionsFile.read(world);
+            String source = live.isEmpty()
+                    ? (file.isEmpty() ? sourceName() : "BattleTowersFile")
+                    : (file.isEmpty() ? sourceName() : sourceName() + "+BattleTowersFile");
+            StructureResult other = StructureResult.nearestOf(STRUCTURE_ID, merge(live, file),
+                    playerPos, radius, source);
+            if (other != null && (best == null || other.getDistanceSq() < best.getDistanceSq())) {
+                best = other;
+            }
+        }
+        if (best == null) {
+            return null;
+        }
+        return variantId == null ? best : best.withVariant(variantId, true);
+    }
+
+    /**
+     * Material families the scanner can recognise. Sandstone and ice are absent on purpose: both
+     * occur naturally in tower-sized amounts, so they would need a shape check before being
+     * offered as a filter.
+     */
+    @Override
+    public List<StructureVariant> getVariants(World world) {
+        List<StructureVariant> out = new ArrayList<StructureVariant>();
+        out.add(new StructureVariant(STRUCTURE_ID + "/cobblestone", STRUCTURE_ID,
+                "Cobblestone Tower", StructureVariant.VariantSource.RUNTIME_API));
+        out.add(new StructureVariant(STRUCTURE_ID + "/cobblestonemossy", STRUCTURE_ID,
+                "Mossy Cobblestone Tower", StructureVariant.VariantSource.RUNTIME_API));
+        out.add(new StructureVariant(STRUCTURE_ID + "/netherrack", STRUCTURE_ID,
+                "Netherrack Tower", StructureVariant.VariantSource.RUNTIME_API));
+        return out;
+    }
+
+    private static String variantSuffix(String variantId) {
+        int slash = variantId.lastIndexOf('/');
+        return (slash < 0 ? variantId : variantId.substring(slash + 1)).toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
@@ -140,8 +197,12 @@ public class BattleTowersLocator implements IStructureLocator {
      * the region-file scan. Also used by the cache recorder, so the cache sees every source.
      */
     public List<BlockPos> collectPositions(World world) {
-        return merge(merge(collectFromWorldMap(world), BattleTowersPositionsFile.read(world)),
-                BattleTowersRegionScanner.scan(world));
+        List<BlockPos> out = new ArrayList<BlockPos>(
+                merge(collectFromWorldMap(world), BattleTowersPositionsFile.read(world)));
+        for (BattleTowersRegionScanner.TowerHit hit : BattleTowersRegionScanner.scan(world)) {
+            out.add(hit.pos);
+        }
+        return out;
     }
 
     private static List<BlockPos> merge(List<BlockPos> live, List<BlockPos> file) {
