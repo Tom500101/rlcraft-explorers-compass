@@ -259,34 +259,46 @@
 
 ## 8. 选择界面：半透明扁平列表（2026-11-03 深夜）
 
-> 参考实现：`https://github.com/MattCzyr/ExplorersCompass`（看过 `forge-1.16.5` 与 `main` 两个分支的
-> `gui/` 与 `util/RenderUtils`）。样式从那里取值，实现全部是本项目自己的 1.12.2 代码，没有拷类。
+> 参考实现：`https://github.com/MattCzyr/ExplorersCompass`（对照过 `forge-1.16.5` 与 `main` 的 `gui/`、
+> `util/RenderUtils`）。下方是最终确认的视觉规格；实现是本项目自己的 1.12.2 代码（`GuiScreen` +
+> `GuiSlot` + `drawRect`），不复制上游类。
 
-- **上游的真实取值方式**：`RenderUtils.getBackgroundColor(active, hovered)` 用一张状态表算 alpha——
-  `state/2*0.9+0.1` → `(int)(255*f)/2 << 24`。有效结果只有三个：
+### 8.1 规格（提取值）
 
-| 状态 | state | alpha | 值 |
-  | --- | --- | --- | --- |
-  | 正常（行、按钮、输入框） | 2 | 0x7F | `0x7F000000` |
-  | 悬停 / 选中 | 3 | 0xB8 | `0xB8000000` |
-  | 禁用 / 滚动条轨道 | 5 | 299→溢出 | `0x2B000000` |
-- **上游没有整屏面板**：1.16.5 的 `ExplorersCompassScreen.render` 先调 `renderBackground()`，
-  在有世界时画 `0xC0101010 → 0xD0101010` 的竖向渐变（1.12.2 的 `drawDefaultBackground()` 是同一对常量），
-  然后每个控件各自叠一层 0x7F。截图（Modrinth gallery）确认：世界被压暗但仍可见，行内是纯文字，没有描边。
-- **选中态在两个版本里不一样**：1.16.5 是在行上盖一块 `255/2<<24`（= 0x7F）的矩形；
-  1.20.1+ 直接整行填 `0xB8000000`。**仓库里没有 `0x3F000000`**——那个数来自上一轮的提取记录，
-  仍按它实现：整屏 0x7F 面板 + 选中叠 0x3F，合成后约 0x9F，和上游 0xB8 的观感接近。
-- **本项目落地**：
-  - `GuiTheme` 只保留这几个值：`PANEL 0x7F000000`、`ROW_SELECTED 0x3F000000`、`SCROLLBAR_WIDTH 6`、
-    以及上游状态表的 `CONTROL_HOVERED 0xB8000000` / `CONTROL_DISABLED 0x2B000000`；
-  - 行高 50（上游 itemHeight），三行文本：名称（白）/ `Source: x`（`0xFF808080`）/ `ID: y`（同灰），
-    行内不画边框、分隔线、hover 底色，也没有金色——上游只有白与灰；
-  - 子项缩进 10px，`+` / `-` 占 16px 栏，保证所有名称对齐；
-  - 滚动条 6px，轨道 `0x2B000000`、滑块 `0xB8000000`，滑块高 32..(视口-8)；
-  - 按钮/输入框：填充 0x7F、hover 0xB8、禁用 0x2B，无边框无阴影，文本恒为白色（上游同款）。
-- **与上游的差异（有意保留）**：上游是单层结构列表，我们有父/子两级（`+` 折叠）、计数行、
-  `@mod` 提示与「建议点仓库」按钮；这些是功能差异，样式仍走同一套色。
-- **未做**：`GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，没有跟这套主题。
+| 元素 | 参数 |
+| --- | --- |
+| 列表区底色 | 纯黑 `0x000000`，alpha ≈ `0x7F`（半透明），整块列表区一层 |
+| 选中行 | **同一层半透明黑再叠一次**（`0x7F` over `0x7F` ≈ `0xBF`），行区 `left-4 → right+4`，上下各多 4px |
+| 行宽 | 参考实现是 `默认宽度 + 50`；左右各 4px 内边距 |
+| 滚动条 | 位置 `rowRight - 2`，宽 6px；轨道 alpha ≈ `0x2B`，滑块 alpha ≈ `0xF2`；滑块高度按可视比例、最小 32px，两端留 8px |
+| 文字 | 左对齐，起始 `rowLeft`；可用文字高 = 行高 − 4 |
+| 分隔线 | **没有**，完全靠选中底色区分 |
+
+关键不是颜色，而是**去掉所有行边框**：一层半透明底 + 选中态叠深，仅此而已。
+
+### 8.2 落地映射
+
+- **屏幕背景**：`drawDefaultBackground()`（1.12.2 在位面世界下画 `0xC0101010 → 0xD0101010` 渐变，
+  与上游 `renderBackground()` 同一对常量）。列表区再叠 0x7F，实际约 `0xE0` —— 与上游观感一致。
+- **列表区**：`StructureSearchList.drawScreen` 先填 `LIST_BACKGROUND = 0x7F000000`，再画行。
+- **选中**：`SELECTION_LAYER = 0x7F000000`（与底色同值），矩形 `left-4, y-4 → right+4, y+height+4`，
+  由 scissor 裁进视口，所以贴边行不会画到列表外。
+- **行宽 +50 的处理**：上游把列表画成 `width + 110`（左右各溢 55px）、`super.getRowWidth()` = 220，
+  再 +50 = 270，行因此在屏幕外延展。我们的列表不越界，按它的**可见效果**实现：行贴满面板，
+  文字列 14px（`+`/`-` 占 3..9px 的 gutter），子项再缩进 10px。真按 +50 会让左右各溢出 25px。
+- **滚动条**：`right-8 .. right-2`（6px，距边 2px），轨道 `0x2B000000`，滑块 `0xF2000000`；
+  滑块高 `max(32, viewport²/total)`，上限 `viewport-16`，行程两端各留 8px。
+- **文字**：行高 50，可用 46，三行 10px 行距，偏移 `y+11 / +21 / +31`（名称白、`Source`/`ID` 为 `0xFF808080`）。
+- **零边框**：行、按钮、输入框都不画 border/shadow；按钮 hover 用 `0xB8`、禁用 `0x2B`，文字恒白。
+
+### 8.3 已废弃的旧口径
+
+- 上一轮记录的「整屏 0x7F 面板 + 选中叠 `0x3F000000`」**作废**：`0x3F` 在上游仓库里不存在，
+  且层级也不对——面板是**列表区**，不是整屏；选中是**同值再叠一层**，不是 25% 的第三种透明度。
+- `GuiTheme` 现在只有 `LIST_BACKGROUND` / `SELECTION_LAYER` / `SCROLLBAR_WIDTH` / `SCROLL_TRACK` /
+  `SCROLL_THUMB` 与文本色；`CONTROL*` 是按钮状态。
+
+**未做**：`GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，没有套这套列表规格。
 
 ## 9. 待办
 

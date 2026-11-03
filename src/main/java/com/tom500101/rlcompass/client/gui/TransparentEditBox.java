@@ -58,7 +58,7 @@ public class TransparentEditBox extends GuiTextField {
             return;
         }
         Gui.drawRect(getVisualLeft(), getVisualTop(), getVisualRight(), getVisualBottom(),
-                GuiTheme.PANEL);
+                GuiTheme.CONTROL);
         super.drawTextBox();
     }
 }

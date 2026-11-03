@@ -20,17 +20,20 @@ import org.lwjgl.opengl.GL11;
  * vanilla slot blits selection sprites and draws scroll buttons we do not want. Rows are clipped
  * with an explicit scissor box so a partially visible row cannot bleed over the screen header.
  *
- * <p>A row draws no box, border or separator: the screen sheet shows through and only the selected
- * row stacks {@link GuiTheme#ROW_SELECTED} on top, exactly like the reference screen where the list
- * is text on a dimmed world. Three lines per row (name / source / id) with the same 10px leading the
- * reference uses, which is why the row is 50px tall.
+ * <p>The list is one translucent surface ({@link GuiTheme#LIST_BACKGROUND}); a row draws no box,
+ * border or separator, and only the selected row stacks that same surface again, bleeding 4px past
+ * the row on every side. Selection is therefore the only depth cue in the list. Three lines per row
+ * (name / source / id) with the reference's 10px leading, which is why the row is 50px tall.
  */
 public class StructureSearchList extends GuiSlot {
 
     private static final long DOUBLE_CLICK_MS = 250L;
-    /** Names start here; the +/- marker sits in the gutter to the left of it. */
-    private static final int ROW_TEXT_LEFT = 16;
+    /** Names start here (row padding + the +/- gutter); the marker sits at {@link #MARKER_LEFT}. */
+    private static final int ROW_TEXT_LEFT = 14;
+    private static final int MARKER_LEFT = 3;
     private static final int VARIANT_INDENT = 10;
+    /** The selection layer bleeds this far past the row on every side. */
+    private static final int SELECTION_BLEED = 4;
 
     private final GuiStructureSelect parent;
     private final List<StructureSearchEntry> entries = new ArrayList<StructureSearchEntry>();
@@ -177,13 +180,15 @@ public class StructureSearchList extends GuiSlot {
 
     @Override
     protected void drawBackground() {
-        // The screen sheet is painted by drawScreen; the list itself stays transparent.
+        // The list surface is painted by drawScreen; GuiSlot's own background stays unused.
     }
 
     @Override
     public void drawScreen(int mouseXIn, int mouseYIn, float partialTicks) {
         ScaledResolution scaled = new ScaledResolution(this.mc);
         int scale = scaled.getScaleFactor();
+        // One translucent surface for the whole list area; rows add nothing on top of it.
+        Gui.drawRect(this.left, this.top, this.right, this.bottom, GuiTheme.LIST_BACKGROUND);
         GL11.glEnable(GL11.GL_SCISSOR_TEST);
         GL11.glScissor(this.left * scale,
                 this.mc.displayHeight - this.bottom * scale,
@@ -206,18 +211,20 @@ public class StructureSearchList extends GuiSlot {
                             float partialTicks) {
         StructureSearchEntry entry = entries.get(slotIndex);
         boolean selected = slotIndex == selectedIndex;
-        int rowRight = this.right - GuiTheme.SCROLLBAR_WIDTH;
+        int rowRight = this.right - 2;
         int rowBottom = yPos + heightIn;
 
-        // The only row chrome: a selected row stacks the 25% overlay on the screen sheet.
+        // The only row chrome: selection stacks the same surface again, bleeding 4px past the row.
         if (selected) {
-            Gui.drawRect(this.left, yPos, rowRight, rowBottom, GuiTheme.ROW_SELECTED);
+            Gui.drawRect(this.left - SELECTION_BLEED, yPos - SELECTION_BLEED,
+                    rowRight + SELECTION_BLEED, rowBottom + SELECTION_BLEED,
+                    GuiTheme.SELECTION_LAYER);
         }
 
         int textLeft = this.left + ROW_TEXT_LEFT + (entry.getVariantId() != null ? VARIANT_INDENT : 0);
         if (entry.isExpandable()) {
             this.mc.fontRenderer.drawStringWithShadow(entry.isExpanded() ? "-" : "+",
-                    this.left + 5, yPos + 11, GuiTheme.TEXT);
+                    this.left + MARKER_LEFT, yPos + 11, GuiTheme.TEXT);
         }
 
         int textLimit = rowRight - 8 - textLeft;
@@ -255,15 +262,17 @@ public class StructureSearchList extends GuiSlot {
         if (totalHeight <= viewport) {
             return;
         }
-        int barRight = this.right;
+        // 2px in from the list edge, 6px wide; the track runs the full viewport.
+        int barRight = this.right - 2;
         int barLeft = barRight - GuiTheme.SCROLLBAR_WIDTH;
         Gui.drawRect(barLeft, this.top, barRight, this.bottom, GuiTheme.SCROLL_TRACK);
 
-        int maxThumbHeight = Math.max(24, viewport - 8);
+        // Proportional thumb, at least 32px, with an 8px margin at both ends of the track.
+        int maxThumbHeight = Math.max(24, viewport - 16);
         int thumbHeight = Math.min(maxThumbHeight, Math.max(32, viewport * viewport / totalHeight));
+        int travel = Math.max(0, viewport - 16 - thumbHeight);
         int track = Math.max(1, totalHeight - viewport);
-        int maxThumbTop = Math.max(0, viewport - thumbHeight);
-        int thumbTop = this.top + (int) (this.amountScrolled / (float) track * maxThumbTop);
+        int thumbTop = this.top + 8 + (int) (this.amountScrolled / (float) track * travel);
         Gui.drawRect(barLeft, thumbTop, barRight, thumbTop + thumbHeight, GuiTheme.SCROLL_THUMB);
     }
 }

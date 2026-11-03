@@ -173,9 +173,9 @@ public class GuiStructureSelect extends GuiScreen {
         int listLeft = getListLeft();
         int listTop = getListTop();
 
-        // One translucent sheet for the whole screen; the reference screen has no panel borders,
-        // so the rows are the only thing that adds chrome on top of it.
-        GuiTheme.drawBackdrop(width, height);
+        // Vanilla in-world backdrop (the same dark gradient the reference screen renders first);
+        // the list paints its own translucent surface on top of it.
+        drawDefaultBackground();
 
         selectionList.drawScreen(mouseX, mouseY, partialTicks);
 
@@ -195,10 +195,10 @@ public class GuiStructureSelect extends GuiScreen {
 
         if (allEntries.isEmpty()) {
             fontRenderer.drawString(I18n.format("gui.rlcompass.empty"), listLeft + 16,
-                    listTop + RESULTS_HEADER_HEIGHT + 6, GuiTheme.TEXT_INFO);
+                    listTop + RESULTS_HEADER_HEIGHT + 16, GuiTheme.TEXT_INFO);
         } else if (selectionList.getEntryCount() == 0) {
             fontRenderer.drawString(I18n.format("gui.rlcompass.noMatch"), listLeft + 16,
-                    listTop + RESULTS_HEADER_HEIGHT + 6, GuiTheme.TEXT_INFO);
+                    listTop + RESULTS_HEADER_HEIGHT + 16, GuiTheme.TEXT_INFO);
         }
 
         searchBox.drawTextBox();

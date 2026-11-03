@@ -27,7 +27,7 @@ public class TransparentButton extends GuiButton {
 
         int fill = !this.enabled ? GuiTheme.CONTROL_DISABLED
                 : this.hovered ? GuiTheme.CONTROL_HOVERED
-                : GuiTheme.PANEL;
+                : GuiTheme.CONTROL;
 
         Gui.drawRect(this.x, this.y, this.x + this.width, this.y + this.height, fill);
         drawCenteredString(mc.fontRenderer, this.displayString,
