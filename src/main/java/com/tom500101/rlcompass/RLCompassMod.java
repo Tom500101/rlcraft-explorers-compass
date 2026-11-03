@@ -14,6 +14,7 @@ import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartedEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
+import net.minecraft.command.ICommand;
 import net.minecraftforge.event.world.WorldEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
@@ -115,6 +116,7 @@ public class RLCompassMod {
         // Battle Towers may no longer record positions (RLTweaker replaces the generator), so the
         // save's region files are scanned in the background before the first search asks for it.
         BattleTowersRegionScanner.prewarm(overworld);
+        logRecurrentComplexCommands(server);
         if (Boolean.getBoolean(PROBE_PROPERTY)) {
             StructureProbe.probe(overworld, overworld.getSpawnPoint());
         }
@@ -192,5 +194,28 @@ public class RLCompassMod {
             LOG.info("[SELFTEST] {} -> {} ({} ms)", id, result, System.currentTimeMillis() - startedAt);
         }
         LOG.info("[SELFTEST] done");
+    }
+
+    /**
+     * Recurrent Complex builds its command names as {@code commandPrefix + "gen"}, and the prefix is
+     * read from the config at runtime — which is why the exact spelling is worth logging rather than
+     * guessing when a command is reported as unknown.
+     */
+    private static void logRecurrentComplexCommands(MinecraftServer server) {
+        try {
+            StringBuilder names = new StringBuilder();
+            for (ICommand command : server.getCommandManager().getCommands().values()) {
+                if (command.getClass().getName().contains("reccomplex")
+                        || command.getClass().getName().contains("ivorius")) {
+                    if (names.length() > 0) {
+                        names.append(", ");
+                    }
+                    names.append('/').append(command.getName());
+                }
+            }
+            LOG.info("[RC] registered commands: {}", names.length() == 0 ? "<none>" : names.toString());
+        } catch (Throwable t) {
+            LOG.warn("[RC] could not list registered commands: {}", t.toString());
+        }
     }
 }
