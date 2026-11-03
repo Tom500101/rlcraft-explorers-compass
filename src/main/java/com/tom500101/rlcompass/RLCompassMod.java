@@ -31,6 +31,7 @@ import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
 import com.tom500101.rlcompass.cache.RcGenerationRecorder;
 import com.tom500101.rlcompass.cache.RecurrentComplexData;
+import com.tom500101.rlcompass.cache.SearchMemory;
 import com.tom500101.rlcompass.locate.MapGenLocatorRegistrar;
 import com.tom500101.rlcompass.locate.ModLocatorRegistrar;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
@@ -147,6 +148,7 @@ public class RLCompassMod {
     public void onWorldUnload(WorldEvent.Unload event) {
         if (event.getWorld() != null && !event.getWorld().isRemote) {
             RecurrentComplexData.invalidate();
+            SearchMemory.invalidate();
         }
     }
 
