@@ -21,6 +21,7 @@ public final class ClientSetup {
     public static void register() {
         MinecraftForge.EVENT_BUS.register(new CompassHudRenderer());
         MinecraftForge.EVENT_BUS.register(new ClientHudSelfTest());
+        MinecraftForge.EVENT_BUS.register(new ModelRegistration());
         LOG.info("[CLIENT] HUD renderer registered");
     }
 }
