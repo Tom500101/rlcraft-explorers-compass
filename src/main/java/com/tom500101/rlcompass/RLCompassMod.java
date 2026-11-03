@@ -26,6 +26,7 @@ import com.tom500101.rlcompass.client.ClientSetup;
 import com.tom500101.rlcompass.command.CommandRLCompass;
 import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
+import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
 import com.tom500101.rlcompass.locate.MapGenLocatorRegistrar;
 import com.tom500101.rlcompass.locate.ModLocatorRegistrar;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
@@ -112,6 +113,9 @@ public class RLCompassMod {
         if (overworld == null) {
             return;
         }
+        // Battle Towers may no longer record positions (RLTweaker replaces the generator), so the
+        // save's region files are scanned in the background before the first search asks for it.
+        BattleTowersRegionScanner.prewarm(overworld);
         if (Boolean.getBoolean(PROBE_PROPERTY)) {
             StructureProbe.probe(overworld, overworld.getSpawnPoint());
         }

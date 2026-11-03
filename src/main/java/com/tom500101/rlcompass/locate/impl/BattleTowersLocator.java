@@ -15,6 +15,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.cache.BattleTowersPositionsFile;
+import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.util.Reflect;
@@ -88,6 +89,13 @@ public class BattleTowersLocator implements IStructureLocator {
         if (!BattleTowersPositionsFile.read(world).isEmpty()) {
             return true;
         }
+        // P2: the towers are still in the region files even when the mod no longer records them.
+        // Only the cached result is consulted here: this runs on every picker open, and a
+        // synchronous 64-region scan cost 2-3 s of freeze. The scan itself is warmed at world start.
+        if (!BattleTowersRegionScanner.peek(world).isEmpty()) {
+            return true;
+        }
+        BattleTowersRegionScanner.prewarm(world);
         if (handler == null) {
             return false;
         }
@@ -114,21 +122,26 @@ public class BattleTowersLocator implements IStructureLocator {
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
         List<BlockPos> live = collectFromWorldMap(world);
         List<BlockPos> file = BattleTowersPositionsFile.read(world);
+        List<BlockPos> scanned = BattleTowersRegionScanner.scan(world);
         String source;
-        if (live.isEmpty()) {
+        if (!scanned.isEmpty()) {
+            source = "BattleTowersScan";
+        } else if (live.isEmpty()) {
             source = file.isEmpty() ? sourceName() : "BattleTowersFile";
         } else {
             source = file.isEmpty() ? sourceName() : sourceName() + "+BattleTowersFile";
         }
-        return StructureResult.nearestOf(STRUCTURE_ID, merge(live, file), playerPos, radius, source);
+        return StructureResult.nearestOf(STRUCTURE_ID, merge(merge(live, file), scanned),
+                playerPos, radius, source);
     }
 
     /**
-     * Every tower known in {@code world}'s dimension: the live map plus the on-disk positions file.
-     * Also used by the cache recorder, so the cache sees the file fallback too.
+     * Every tower known in {@code world}'s dimension: the live map, the on-disk positions file and
+     * the region-file scan. Also used by the cache recorder, so the cache sees every source.
      */
     public List<BlockPos> collectPositions(World world) {
-        return merge(collectFromWorldMap(world), BattleTowersPositionsFile.read(world));
+        return merge(merge(collectFromWorldMap(world), BattleTowersPositionsFile.read(world)),
+                BattleTowersRegionScanner.scan(world));
     }
 
     private static List<BlockPos> merge(List<BlockPos> live, List<BlockPos> file) {
