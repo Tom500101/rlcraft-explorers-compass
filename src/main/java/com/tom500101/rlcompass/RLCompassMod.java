@@ -29,6 +29,7 @@ import com.tom500101.rlcompass.command.CommandRLCompass;
 import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
+import com.tom500101.rlcompass.cache.RcGenerationRecorder;
 import com.tom500101.rlcompass.cache.RecurrentComplexData;
 import com.tom500101.rlcompass.locate.MapGenLocatorRegistrar;
 import com.tom500101.rlcompass.locate.ModLocatorRegistrar;
@@ -86,6 +87,8 @@ public class RLCompassMod {
         MapGenLocatorRegistrar.registerAll();
         ModLocatorRegistrar.registerAll();
         MinecraftForge.EVENT_BUS.register(this);
+        // RC wipes its own structure records on load, so they are captured at generation time.
+        MinecraftForge.EVENT_BUS.register(new RcGenerationRecorder());
         // Client classes do not exist on a dedicated server, so the HUD renderer is only touched here.
         if (event.getSide().isClient()) {
             ClientSetup.register();

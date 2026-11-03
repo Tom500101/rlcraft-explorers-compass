@@ -16,6 +16,7 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraft.world.gen.structure.StructureBoundingBox;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -273,5 +274,38 @@ public final class RecurrentComplexData {
     /** Convenience for the locator: squared distance is what the search compares. */
     public static double distanceSq(Record record, BlockPos from) {
         return StructureResult.horizontalDistanceSq(record.center, from);
+    }
+
+    /**
+     * Stores one structure the moment RC places it.
+     *
+     * <p>Called from RC's generation event, so the record does not depend on RC's own data file —
+     * which RLTweaker wipes on every load, and which only ever describes the session that saved it.
+     */
+    public static void record(World world, String structureId, StructureBoundingBox box) {
+        if (world == null || structureId == null || box == null || world.isRemote) {
+            return;
+        }
+        File file = cacheFile(world);
+        if (file == null) {
+            return;
+        }
+        BlockPos center = new BlockPos((box.minX + box.maxX) / 2, (box.minY + box.maxY) / 2,
+                (box.minZ + box.maxZ) / 2);
+        Record record = new Record(structureId, center);
+        String key = cacheKey(world);
+        synchronized (CACHE) {
+            Set<String> seen = KEYS.get(key);
+            if (seen != null && !seen.add(record.key())) {
+                return;
+            }
+            List<Record> list = CACHE.get(key);
+            if (list != null) {
+                list.add(record);
+            }
+        }
+        appendCache(file, Collections.singletonList(record));
+        LOG.info("[RC] recorded '{}' at ({}, {}, {})", structureId, center.getX(), center.getY(),
+                center.getZ());
     }
 }

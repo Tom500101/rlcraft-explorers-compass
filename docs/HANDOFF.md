@@ -226,6 +226,17 @@
   因此新增自持存储：`<世界>/rlcompass/rc_structures_<维度>.tsv`（`id \t x \t y \t z`，只追加，按 key 去重）。
   `WorldEvent.Load` 时把「TSV ∪ 存档 dat」合并并回写新增项；`WorldEvent.Unload` 清缓存以便重进世界时重读。
   这样历史结构只丢一次（本次），之后只增不减。
+- **方案 A（预测）已证伪（2026-11-03 深夜）**：自然结构在 `RCBiomeDecorator.decorate(world, rand, pos, type)`
+  里决定，`rand` 是 `DecorateBiomeEvent.Decorate.getRand()`，也就是**区块装饰阶段共享的 world.rand**；
+  `tryGenerate` 用 `rand.nextFloat()` 与 base/total 权重比较。复刻位置等于复刻整个 BiomeDecorator
+  的抽取序列（草、树、花、矿石…每次抽取都影响它），只要有一个装饰 mod 插入就全偏——原理上不可靠，放弃。
+- **改为在源头记录（2026-11-03 深夜）**：RC 每次放置完成会发
+  `ivorius.reccomplex.events.StructureGenerationEventLite$Post`（`getStructureName()` / `getBoundingBox()`，
+  继承 `WorldEvent` 带 world）。新增 `cache/RcGenerationRecorder`：以 `WorldEvent` 为参数类型注册监听
+  （Forge 会把子类派发给父类监听器），按类名过滤后反射取值，交给
+  `RecurrentComplexData.record(...)` 追加到 TSV。
+  这样记录**不依赖 RC 的存档文件**：RLTweaker 清空、只保留上一次会话、时间窗——全都不再相关。
+  读 dat 的逻辑保留为历史回填；事件反射失败时自动退回该路径。
 - **限制**：只有**已生成**的结构能被找到（RC 的定位语义）。未生成的返回「没找到」。
   多人游戏下客户端读的是本地结构包，若服务端包不同步，变体列表可能对不上。
   验证可用 `/rc gen <结构>` 现场生成一座，本会话的实时 map 会立即收录。
