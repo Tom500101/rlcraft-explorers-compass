@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Enumeration;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -23,6 +22,7 @@ import net.minecraftforge.fml.common.ModContainer;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.tom500101.rlcompass.cache.RecurrentComplexData;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.locate.StructureVariant;
@@ -33,9 +33,10 @@ import com.tom500101.rlcompass.util.Reflect;
  *
  * <p>The stage-1 probe showed RC replacing the vanilla stronghold/village/temple/monument generators
  * with wrappers, which means those four answer as the <em>vanilla</em> structures — RC's own content
- * (the "Forest Stronghold" style builds) never showed up anywhere.
+ * never showed up anywhere.
  *
- * <p>It is reachable after all. RC keeps a {@code WorldSavedData} of everything it has generated:
+ * <p>RC keeps a {@code WorldSavedData} of everything it has generated, and each entry records the
+ * structure id that was placed:
  *
  * <pre>
  * WorldStructureGenerationData.get(World)            // per-dimension WorldSavedData
@@ -44,16 +45,15 @@ import com.tom500101.rlcompass.util.Reflect;
  *             └─ StructureEntry.getStructureID() : String
  * </pre>
  *
- * <p>RC structures are anchored structures generated at fixed predicted positions, so unlike the
- * other mods there is no "search" to do — the store already contains every instance.
+ * <p><b>On RLCraft that map is always empty.</b> RLTweaker's {@code RecurrentHandler.RCCleanup}
+ * deletes the {@code entries} tag on every world load, so RC itself forgets what it placed. The
+ * records are still in the save file at that moment, so {@link RecurrentComplexData} snapshots them
+ * and this locator merges that snapshot with whatever RC generated during the current session.
  *
  * <h2>Variants</h2>
- * Because each entry records the exact structure that was placed, every RC structure id is a
- * searchable variant: filtering the store by {@code structureID} is exact, never an approximation.
- * The id list itself comes from the installed structure packs — {@code <gameDir>/structures/active}
+ * Because every record carries the exact structure id, each id is a searchable variant and filtering
+ * by it is exact. The id list comes from the installed packs — {@code <gameDir>/structures/active}
  * plus the packs bundled in the mod jar — which the client can read without asking the server.
- * Only generated structures can be found, so a structure that has not been placed yet simply
- * reports "not found".
  */
 public class RecurrentComplexLocator implements IStructureLocator {
 
@@ -72,7 +72,7 @@ public class RecurrentComplexLocator implements IStructureLocator {
     private static List<StructureVariant> variantCache;
 
     private boolean warnedMissing;
-    private boolean loggedEmpty;
+    private boolean loggedLive;
     private String lastReported;
 
     @Override
@@ -92,83 +92,107 @@ public class RecurrentComplexLocator implements IStructureLocator {
 
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
-        return nearest(world, playerPos, radius, null);
+        return nearest(world, playerPos, radius, null, null);
     }
 
     /**
-     * Typed search: keep only the entries RC recorded under {@code variantId}'s structure id.
-     * No replay is involved — the store already knows which structure was placed.
+     * Typed search: keep only the records whose structure id matches. No replay is involved — the
+     * save file already knows which structure was placed where.
      */
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
                                        String variantId) {
         if (variantId == null || variantId.isEmpty()) {
-            return nearest(world, playerPos, radius, null);
+            return nearest(world, playerPos, radius, null, null);
         }
-        String wanted = suffix(variantId);
-        StructureResult result = nearest(world, playerPos, radius, wanted);
-        return result == null ? null : result.withVariant(variantId, true);
+        return nearest(world, playerPos, radius, suffix(variantId), variantId);
     }
 
-    private StructureResult nearest(World world, BlockPos playerPos, int radius, String wantedId) {
-        Map<?, ?> entryMap = entries(world);
-        if (entryMap == null || entryMap.isEmpty()) {
+    private StructureResult nearest(World world, BlockPos playerPos, int radius, String wantedId,
+                                    String variantId) {
+        List<RecurrentComplexData.Record> records = records(world);
+        if (records.isEmpty()) {
+            if (wantedId != null) {
+                LOG.info("[RC] dimension {} has no structure records to search", world.provider.getDimension());
+            }
             return null;
         }
         double maxDistanceSq = (double) radius * (double) radius;
         double bestDistanceSq = Double.MAX_VALUE;
-        BlockPos best = null;
-        String bestLabel = null;
-
-        Object[] entries;
-        try {
-            entries = entryMap.values().toArray();
-        } catch (Throwable t) {
-            return null;
-        }
-        for (Object entry : entries) {
-            Object rawBox = Reflect.invoke(entry, "getBoundingBox");
-            if (!(rawBox instanceof StructureBoundingBox)) {
+        RecurrentComplexData.Record best = null;
+        int considered = 0;
+        for (RecurrentComplexData.Record record : records) {
+            if (wantedId != null && !matches(record.structureId, wantedId)) {
                 continue;
             }
-            String label = null;
-            if (wantedId != null) {
-                Object id = Reflect.invoke(entry, "getStructureID");
-                label = id instanceof String ? (String) id : null;
-                if (!matches(label, wantedId)) {
-                    continue;
-                }
-            }
-            StructureBoundingBox box = (StructureBoundingBox) rawBox;
-            BlockPos centre = new BlockPos(
-                    (box.minX + box.maxX) / 2,
-                    (box.minY + box.maxY) / 2,
-                    (box.minZ + box.maxZ) / 2);
-            double distanceSq = StructureResult.horizontalDistanceSq(centre, playerPos);
+            considered++;
+            double distanceSq = RecurrentComplexData.distanceSq(record, playerPos);
             if (distanceSq > maxDistanceSq || distanceSq >= bestDistanceSq) {
                 continue;
             }
             bestDistanceSq = distanceSq;
-            best = centre;
-            bestLabel = label;
+            best = record;
         }
         if (best == null) {
             if (wantedId != null) {
-                LOG.debug("[RC] no '{}' generated within {} blocks ({} entries known)",
-                        wantedId, radius, entryMap.size());
+                LOG.info("[RC] no '{}' among {} matching records within {} blocks",
+                        wantedId, considered, radius);
             }
             return null;
         }
-        if (bestLabel != null && !bestLabel.equals(lastReported)) {
-            lastReported = bestLabel;
+        if (!best.structureId.equals(lastReported)) {
+            lastReported = best.structureId;
             LOG.info("[RC] nearest structure is '{}' at ({}, {}, {})",
-                    bestLabel, best.getX(), best.getY(), best.getZ());
+                    best.structureId, best.center.getX(), best.center.getY(), best.center.getZ());
         }
-        return new StructureResult(STRUCTURE_ID, best, sourceName(), bestDistanceSq);
+        StructureResult result = new StructureResult(STRUCTURE_ID, best.center, sourceName(), bestDistanceSq);
+        return variantId == null ? result : result.withVariant(variantId, true);
     }
 
-    /** Reads RC's per-dimension store, or {@code null} when RC is absent or unreadable. */
-    private Map<?, ?> entries(World world) {
+    /**
+     * The save-file snapshot plus RC's live map. The snapshot covers everything placed in earlier
+     * sessions (RC's own record of it was wiped at load), the live map covers this session.
+     */
+    private List<RecurrentComplexData.Record> records(World world) {
+        List<RecurrentComplexData.Record> out = new ArrayList<RecurrentComplexData.Record>(
+                RecurrentComplexData.snapshot(world));
+        Map<?, ?> live = liveEntries(world);
+        if (live != null && !live.isEmpty()) {
+            int added = 0;
+            for (Object entry : live.values()) {
+                RecurrentComplexData.Record record = toRecord(entry);
+                if (record != null) {
+                    out.add(record);
+                    added++;
+                }
+            }
+            if (added > 0 && !loggedLive) {
+                loggedLive = true;
+                LOG.info("[RC] {} structures generated this session", added);
+            }
+        }
+        return out;
+    }
+
+    private static RecurrentComplexData.Record toRecord(Object entry) {
+        Object rawBox = Reflect.invoke(entry, "getBoundingBox");
+        if (!(rawBox instanceof StructureBoundingBox)) {
+            return null;
+        }
+        Object id = Reflect.invoke(entry, "getStructureID");
+        if (!(id instanceof String)) {
+            return null;
+        }
+        StructureBoundingBox box = (StructureBoundingBox) rawBox;
+        BlockPos center = new BlockPos(
+                (box.minX + box.maxX) / 2,
+                (box.minY + box.maxY) / 2,
+                (box.minZ + box.maxZ) / 2);
+        return new RecurrentComplexData.Record((String) id, center);
+    }
+
+    /** RC's own map for this dimension, or {@code null} when RC is absent or its field moved. */
+    private Map<?, ?> liveEntries(World world) {
         Class<?> dataClass = Reflect.findClass(DATA_CLASS);
         if (dataClass == null) {
             if (!warnedMissing) {
@@ -179,43 +203,19 @@ public class RecurrentComplexLocator implements IStructureLocator {
         }
         java.lang.reflect.Method getData = Reflect.findMethod(dataClass, "get", World.class);
         if (getData == null) {
-            if (!loggedEmpty) {
-                loggedEmpty = true;
-                LOG.info("[RC] cannot resolve WorldStructureGenerationData.get(World)");
-            }
             return null;
         }
         Object data;
         try {
             data = getData.invoke(null, world);
         } catch (Throwable t) {
-            if (!loggedEmpty) {
-                loggedEmpty = true;
-                Throwable cause = t.getCause() == null ? t : t.getCause();
-                LOG.info("[RC] WorldStructureGenerationData.get(World) threw {}: {}",
-                        cause.getClass().getName(), cause.getMessage());
-            }
             return null;
         }
         if (data == null) {
-            if (!loggedEmpty) {
-                loggedEmpty = true;
-                LOG.info("[RC] WorldStructureGenerationData.get(World) returned null");
-            }
             return null;
         }
         Object rawEntries = Reflect.read(data, "entryMap");
-        if (!(rawEntries instanceof Map)) {
-            LOG.info("[RC] WorldStructureGenerationData.entryMap not readable ({})", rawEntries);
-            return null;
-        }
-        Map<?, ?> entryMap = (Map<?, ?>) rawEntries;
-        if (entryMap.isEmpty() && !loggedEmpty) {
-            loggedEmpty = true;
-            LOG.info("[RC] RC has not generated any structures in dimension {} yet",
-                    world.provider.getDimension());
-        }
-        return entryMap;
+        return rawEntries instanceof Map ? (Map<?, ?>) rawEntries : null;
     }
 
     /**

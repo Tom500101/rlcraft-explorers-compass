@@ -178,11 +178,17 @@
   单元格宽 `spacing` 个 chunk（默认 32 = 512 格），所以「外推 48 / 64 格」永远跳不出去。
   实测表现：在沙漠神殿里搜丛林神庙/女巫小屋，12 次 hop 全部命中同一座，`0 ms` 返回空。
 - **正解**：`MapGenLocator.enumerateCandidates` 直接枚举单元格——对每个 cell 复刻生成器的候选
-  （`world.setRandomSeed(cellX, cellZ, salt)` + 两次 `nextInt(spacing-8)`），再用反射的
-  `canSpawnStructureAtCoords`（SRG `func_75047_a`）确认。spacing 反射读取
-  （`field_82669_g` / `field_75054_f`，回退 32），salt 由子类给出
-  （神殿 14357617、村庄 10387312）。确认这一步是关键：若某个包改了间距或偏移，重放会自然失配、
-  宁可返回空也不会给出错误坐标。
+  （`world.setRandomSeed(cellX, cellZ, salt)` + 两次 `nextInt(spacing-8)`）。
+  salt 由子类给出（神殿 14357617、村庄 10387312）。
+- **第二次踩坑（2026-11-03 晚）**：第一版用反射的 `canSpawnStructureAtCoords`（SRG `func_75047_a`）确认候选，
+  实机日志是 `[TEMPLE] no jungle among 0 structures`——反射调用全部返回 false，一个候选都没留下。
+  改为**自己按生物群系白名单确认**（`acceptsBiome`）：原版 `canSpawnStructureAtCoords` 本来就只是
+  「chunk 是该 cell 的候选」＋「biome 在白名单里」两件事，后者可以直接做。
+  神殿白名单 = `BIOMELIST` 的 7 个（desert / desert_hills / jungle / jungle_hills / swampland /
+  ice_plains / cold_taiga），村庄 = `VILLAGE_SPAWN_BIOMES` 的 4 个（plains / desert / savanna / taiga，排除 mutated_）。
+- **spacing 自校验**：反射读到的 spacing 不直接信任——先用 `getNearestStructurePos` 拿一座真实结构，
+  重放它所属 cell，能复现才采用；否则 9..128 暴力试，仍失败就打 WARN。
+  这样反射字段名失效时会退化成「慢但对」，而不是「静默返回空」。
 - **验证**：用世界种子离线复刻本算法，神殿候选 `(2328, 3960)`、村庄候选 `(2312, 4136)`
   与实机 `getNearestStructurePos` 的结果逐字一致。
 - **无变体的原版结构**：`stronghold` / `monument` / `mansion` / `mineshaft` 都只有一种形态，保持父项即可。
@@ -205,6 +211,18 @@
   而 RC 的结构注册表 `StructureRegistry.INSTANCE` 只在服务端加载；客户端调
   `WorldStructureGenerationData.get(WorldClient)` 也拿不到存档数据。文件扫描两侧都能跑。
 - **匹配**：`structureID` 可能是裸文件名，也可能是包内相对路径，故同时接受「全等」与「路径后缀」两种形态。
-- **限制**：只有**已生成**的结构能被找到（RC 的定位就是查这张表）。未生成的返回「没找到」，
-  这是正确结果，不是 bug。多人游戏下客户端读的是本地结构包，若服务端包不同步，变体列表可能对不上。
+- **RLTweaker 会清空记录（2026-11-03 晚，关键）**：`RecurrentHandler.RCCleanup.onWorldLoad` 对每个
+  服务端世界调用 `wipeRecurrentData`，直接从 NBT 里删掉 `entries` / `checkedChunks` /
+  `checkedChunksFinal` 三个键再写回。所以 RC 自己的 `entryMap` 在 RLCraft 里**永远是空的**，
+  实测日志即 `[RC] RC has not generated any structures in dimension 0 yet`。
+- **绕法**：清空只动内存，存档文件要到下一次保存才被覆盖。新增 `cache/RecurrentComplexData`，
+  在 `WorldEvent.Load` 时直接用 `CompressedStreamTools.read` 解析
+  `saves/<世界>/[DIM-x/]data/reccomplex-structuredata.dat`（`data.entries[]`，每项
+  `structureID` + `boundingBox` 为 int[6]：minX/minY/minZ/maxX/maxY/maxZ），按文件绝对路径缓存。
+  搜索时把「快照」与「本会话 RC 实时 map」合并：快照覆盖历史，实时 map 覆盖本次新生成的。
+- **代价**：当日 20:55 那次加载时存档里的 16 条已被 RLTweaker 抹掉且随保存落盘，属既成事实；
+  从装上本版起，每个会话新生成的结构都会在下次加载时被快照接住。
+- **限制**：只有**已生成**的结构能被找到（RC 的定位语义）。未生成的返回「没找到」。
+  多人游戏下客户端读的是本地结构包，若服务端包不同步，变体列表可能对不上。
+  验证可用 `/rc gen <结构>` 现场生成一座，本会话的实时 map 会立即收录。
 - **已知规模**：386 个子项，靠 GUI 筛选框检索（例如输 `Ship` → `P_LargeShip`）。

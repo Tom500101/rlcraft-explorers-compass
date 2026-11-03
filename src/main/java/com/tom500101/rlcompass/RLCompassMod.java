@@ -14,6 +14,7 @@ import net.minecraftforge.fml.common.Mod.EventHandler;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartedEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
+import net.minecraftforge.event.world.WorldEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
@@ -27,6 +28,7 @@ import com.tom500101.rlcompass.command.CommandRLCompass;
 import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
+import com.tom500101.rlcompass.cache.RecurrentComplexData;
 import com.tom500101.rlcompass.locate.MapGenLocatorRegistrar;
 import com.tom500101.rlcompass.locate.ModLocatorRegistrar;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
@@ -120,6 +122,18 @@ public class RLCompassMod {
             LOG.info("[SELFTEST] immediate pass");
             runSelfTest(overworld);
             delayedSelfTestCountdown = SELFTEST_DELAY_TICKS;
+        }
+    }
+
+    /**
+     * RLTweaker's {@code RecurrentHandler.RCCleanup} deletes Recurrent Complex's recorded structures
+     * on every world load. The save file still holds the previous session's entries at this point —
+     * the wipe only touches memory until something saves — so the snapshot has to be taken here.
+     */
+    @SubscribeEvent
+    public void onWorldLoad(WorldEvent.Load event) {
+        if (event.getWorld() != null && !event.getWorld().isRemote) {
+            RecurrentComplexData.snapshot(event.getWorld());
         }
     }
 

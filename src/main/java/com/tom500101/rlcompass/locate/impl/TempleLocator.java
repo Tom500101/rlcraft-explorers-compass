@@ -84,6 +84,36 @@ public class TempleLocator extends MapGenLocator {
     }
 
     /**
+     * Mirrors {@code MapGenScatteredFeature.BIOMELIST}: only these seven biomes ever hold a
+     * scattered feature. Identity first, name second — a biome-replacing pack can hand out a
+     * different instance for the same biome.
+     */
+    @Override
+    protected boolean acceptsBiome(Biome biome) {
+        if (biome == null) {
+            return false;
+        }
+        if (biome == Biomes.DESERT || biome == Biomes.DESERT_HILLS
+                || biome == Biomes.JUNGLE || biome == Biomes.JUNGLE_HILLS
+                || biome == Biomes.SWAMPLAND
+                || biome == Biomes.ICE_PLAINS || biome == Biomes.COLD_TAIGA) {
+            return true;
+        }
+        String path = biomePath(biome);
+        return path.equals("desert") || path.equals("desert_hills")
+                || path.equals("jungle") || path.equals("jungle_hills")
+                || path.equals("swampland")
+                || path.equals("ice_plains") || path.equals("cold_taiga");
+    }
+
+    private static String biomePath(Biome biome) {
+        ResourceLocation name = biome.getRegistryName();
+        String path = name == null ? "" : name.toString();
+        int colon = path.indexOf(':');
+        return colon >= 0 ? path.substring(colon + 1) : path;
+    }
+
+    /**
      * Mirrors {@code MapGenScatteredFeature.Start} exactly: the mod compares biome identity, not
      * names. The name lookup is only a fallback for biome-replacing packs where the constant is a
      * different instance for the same biome.

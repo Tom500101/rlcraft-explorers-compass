@@ -1,7 +1,6 @@
 package com.tom500101.rlcompass.locate.impl;
 
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -13,6 +12,7 @@ import java.util.Random;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraft.world.biome.Biome;
 import net.minecraft.world.gen.ChunkGeneratorOverworld;
 import net.minecraft.world.gen.ChunkProviderServer;
 import net.minecraft.world.gen.IChunkGenerator;
@@ -124,20 +124,20 @@ public class MapGenLocator implements IStructureLocator {
      * at the vanilla default — which is why the old 48-block hop loop never advanced.
      *
      * <p>So the grid is enumerated instead: for every cell covering the radius, reproduce the
-     * generator's own candidate ({@code setRandomSeed(cellX, cellZ, seed)} then two {@code nextInt}
-     * calls) and confirm it with {@code canSpawnStructureAtCoords}. Confirmation is what keeps this
-     * honest — if a mod changes the offsets or the spacing, the replay stops matching and yields
-     * nothing rather than a wrong coordinate.
+     * generator's own candidate ({@code setRandomSeed(cellX, cellZ, salt)} then two {@code nextInt}
+     * calls) and keep it when its biome is one the generator accepts. Both halves are vanilla
+     * behaviour — {@code canSpawnStructureAtCoords} is exactly "is the cell candidate" plus "is the
+     * biome allowed" — so no reflection into the generator is needed.
+     *
+     * <p>The spacing itself is still read reflectively, but never trusted blindly: it is verified by
+     * reproducing a structure {@code getNearestStructurePos} already returned, and brute-forced when
+     * that check fails.
      *
      * @param seedConstant per-generator salt: 14357617 for scattered features, 10387312 for villages
      */
     protected List<BlockPos> enumerateCandidates(World world, MapGenStructure generator,
                                                  BlockPos playerPos, int radius, int seedConstant) {
-        Method canSpawn = canSpawnStructureAtCoords();
-        if (canSpawn == null) {
-            return Collections.emptyList();
-        }
-        int spacing = spacingChunks(generator);
+        int spacing = resolveSpacing(world, generator, playerPos, seedConstant);
         int offsetRange = spacing - 8;
         if (offsetRange <= 0) {
             return Collections.emptyList();
@@ -155,11 +155,11 @@ public class MapGenLocator implements IStructureLocator {
                 Random random = world.setRandomSeed(cellX, cellZ, seedConstant);
                 int chunkX = cellX * spacing + random.nextInt(offsetRange);
                 int chunkZ = cellZ * spacing + random.nextInt(offsetRange);
-                if (!spawnsAt(generator, canSpawn, chunkX, chunkZ)) {
-                    continue;
-                }
                 BlockPos candidate = new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
                 if (StructureResult.horizontalDistanceSq(candidate, playerPos) > maxDistanceSq) {
+                    continue;
+                }
+                if (!acceptsBiome(world.getBiome(candidate))) {
                     continue;
                 }
                 found.add(candidate);
@@ -175,13 +175,55 @@ public class MapGenLocator implements IStructureLocator {
         return found;
     }
 
-    private static boolean spawnsAt(MapGenStructure generator, Method canSpawn, int chunkX, int chunkZ) {
+    /**
+     * Whether the generator would build here given this biome. Subclasses mirror their generator's
+     * own biome list; the default accepts everything.
+     */
+    protected boolean acceptsBiome(Biome biome) {
+        return true;
+    }
+
+    /**
+     * The spacing between cells, in chunks. Read reflectively, then verified against a structure the
+     * generator itself just reported: replaying its cell must land on the same chunk. That check
+     * turns a wrong field name (or a pack that changed the spacing) into a brute-force search
+     * instead of a silently empty result.
+     */
+    private static int resolveSpacing(World world, MapGenStructure generator, BlockPos playerPos,
+                                      int seedConstant) {
+        int reflected = spacingChunks(generator);
+        BlockPos probe;
         try {
-            Object value = canSpawn.invoke(generator, Integer.valueOf(chunkX), Integer.valueOf(chunkZ));
-            return value instanceof Boolean && ((Boolean) value).booleanValue();
+            probe = generator.getNearestStructurePos(world, playerPos, false);
         } catch (Throwable t) {
-            return false;
+            return reflected;
         }
+        if (probe == null) {
+            return reflected;
+        }
+        if (reproduces(probe, reflected, world, seedConstant)) {
+            return reflected;
+        }
+        for (int candidate = 9; candidate <= 128; candidate++) {
+            if (candidate != reflected && reproduces(probe, candidate, world, seedConstant)) {
+                LOG.warn("[MAPGEN] spacing {} does not reproduce {}; using {} instead",
+                        reflected, probe, candidate);
+                return candidate;
+            }
+        }
+        LOG.warn("[MAPGEN] no spacing reproduces {}; keeping {} and reporting nothing", probe, reflected);
+        return reflected;
+    }
+
+    private static boolean reproduces(BlockPos structure, int spacing, World world, int seedConstant) {
+        int chunkX = structure.getX() >> 4;
+        int chunkZ = structure.getZ() >> 4;
+        int cellX = Math.floorDiv(chunkX, spacing);
+        int cellZ = Math.floorDiv(chunkZ, spacing);
+        Random random = world.setRandomSeed(cellX, cellZ, seedConstant);
+        int expectedX = cellX * spacing + random.nextInt(spacing - 8);
+        int expectedZ = cellZ * spacing + random.nextInt(spacing - 8);
+        return expectedX == chunkX && expectedZ == chunkZ;
     }
 
     /** The spacing between structure cells, in chunks. Falls back to the vanilla default. */
@@ -230,39 +272,11 @@ public class MapGenLocator implements IStructureLocator {
         return spacing;
     }
 
-    private static Method canSpawnStructureAtCoords() {
-        synchronized (SPACING_CACHE) {
-            if (canSpawnResolved) {
-                return canSpawnMethod;
-            }
-            canSpawnResolved = true;
-        }
-        try {
-            Method method = ObfuscationReflectionHelper.findMethod(MapGenStructure.class,
-                    "func_75047_a", boolean.class, int.class, int.class);
-            method.setAccessible(true);
-            canSpawnMethod = method;
-        } catch (Throwable primary) {
-            try {
-                Method raw = MapGenStructure.class.getDeclaredMethod("canSpawnStructureAtCoords",
-                        int.class, int.class);
-                raw.setAccessible(true);
-                canSpawnMethod = raw;
-            } catch (Throwable secondary) {
-                LOG.error("[MAPGEN] cannot reach canSpawnStructureAtCoords; typed searches disabled",
-                        secondary);
-            }
-        }
-        return canSpawnMethod;
-    }
-
     private static final Map<Class<?>, Integer> SPACING_CACHE = new HashMap<Class<?>, Integer>();
     private static final String[] SPACING_FIELD_SRG = {"field_82669_g", "field_75054_f"};
     private static final String[] SPACING_FIELD_MCP = {
             "maxDistanceBetweenScatteredFeatures", "distance"};
     private static final int DEFAULT_SPACING = 32;
-    private static Method canSpawnMethod;
-    private static boolean canSpawnResolved;
 
     private Field field() {
         if (cachedField != null) {

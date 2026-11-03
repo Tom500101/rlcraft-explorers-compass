@@ -79,6 +79,30 @@ public class VillageLocator extends MapGenLocator {
     }
 
     /**
+     * Mirrors {@code MapGenVillage.VILLAGE_SPAWN_BIOMES}: plains, desert, savanna and taiga are the
+     * only biomes a village may occupy, and mutations are excluded by the generator.
+     */
+    @Override
+    protected boolean acceptsBiome(Biome biome) {
+        if (biome == null) {
+            return false;
+        }
+        String path = typeName(biome);
+        if (path.startsWith("mutated_")) {
+            return false;
+        }
+        return path.equals("plains") || path.equals("desert")
+                || path.equals("savanna") || path.equals("taiga");
+    }
+
+    private static String typeName(Biome biome) {
+        ResourceLocation name = biome.getRegistryName();
+        String path = name == null ? "" : name.toString();
+        int colon = path.indexOf(':');
+        return colon >= 0 ? path.substring(colon + 1) : path;
+    }
+
+    /**
      * Buckets the village biome into the style it will be built in. Anything outside the four
      * special families falls back to plains, which is also what vanilla builds for its remaining
      * village biomes.
