@@ -59,7 +59,7 @@ public final class BattleTowersRegionScanner {
     private static final int BLOCK_ICE = 79;
     private static final int BLOCK_PACKED_ICE = 174;
     private static final int BLOCK_NETHERRACK = 87;
-    private static final int BLOCK_NETHER_BRICK = 112;
+    private static final int BLOCK_SOUL_SAND = 88;
 
     /**
      * Per-material floors. Cobblestone excludes village smithies (286-404 blocks); a real tower has
@@ -70,11 +70,13 @@ public final class BattleTowersRegionScanner {
     private static final int MIN_COBBLE = 700;
     private static final int MIN_MOSSY = 200;
     /**
-     * Netherrack occurs naturally in tower-sized amounts (a lava-field chunk held 2783 blocks), so
-     * the material alone cannot identify a tower. The nether-brick floor can: on the overworld it
-     * only comes from these towers, and a sampled tower had 101-139 bricks.
+     * A Netherrack tower is netherrack walls with a soul-sand floor every 7 levels. Netherrack
+     * alone is useless (a natural lava field chunk held 2783 blocks), but the floor count is not:
+     * a real tower had 9 floors of 84-103 soul sand (866 total), while natural terrain in the same
+     * save peaked at 149 and an underground fragment at 166.
      */
-    private static final int MIN_NETHER_BRICK = 100;
+    private static final int MIN_NETHERRACK = 500;
+    private static final int MIN_SOUL_SAND = 300;
     /**
      * Same-type hits closer than this are one tower (a tower spans 1-4 chunks, centres within ~8
      * blocks). Different types are never merged: two towers of different materials can stand next
@@ -383,7 +385,7 @@ public final class BattleTowersRegionScanner {
         int cobble;
         int mossy;
         int netherrack;
-        int netherBrick;
+        int soulSand;
         int sandstone;
         int ice;
         long sumX;
@@ -402,8 +404,8 @@ public final class BattleTowersRegionScanner {
                 case BLOCK_NETHERRACK:
                     netherrack++;
                     break;
-                case BLOCK_NETHER_BRICK:
-                    netherBrick++;
+                case BLOCK_SOUL_SAND:
+                    soulSand++;
                     break;
                 case BLOCK_SANDSTONE:
                     sandstone++;
@@ -429,7 +431,7 @@ public final class BattleTowersRegionScanner {
          * biomes, so they need a shape check first.
          */
         String detectType() {
-            if (netherBrick >= MIN_NETHER_BRICK) {
+            if (netherrack >= MIN_NETHERRACK && soulSand >= MIN_SOUL_SAND) {
                 return "netherrack";
             }
             if (cobble >= MIN_COBBLE && mossy >= MIN_MOSSY) {

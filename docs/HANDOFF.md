@@ -126,15 +126,16 @@
 
 - **漏检一**：`TowerTypes.CobbleStone` 只用圆石、**没有苔石**。旧阈值要求 `mossy ≥ 250`，直接漏掉纯圆石塔。
   实例：`(2311, 5031)`，cobble 820 / mossy 69，y 69–127（高 58 格的真塔）。
-- **漏检二**：`TowerTypes.Netherrack` 用 netherrack 墙 + nether brick 地板，旧扫描完全不认这两个 id。
-  实例：`(4839, 5655)`，netherrack 1127 / nether brick 101。
+- **漏检二**：`TowerTypes.Netherrack` 是 netherrack 墙 + **soul sand 地板**（不是 nether brick；后者只是装饰），旧扫描完全不认这两个 id。
+  实例：`(2247, 5063)`，y 65–123，每层 44–50 块 netherrack，每 7 层一道 84–103 块的 soul sand 地板，合计 netherrack 2783 / soul sand 866。
 - **修复**：
   - 圆石类：`cobble ≥ 700`；苔石只用于区分 `cobblestonemossy`（≥200）与 `cobblestone`；
-  - 地狱岩类：以 `nether_brick ≥ 100` 作信号。只数 netherrack 不可行——自然岩浆区一个 chunk 就有 2783 块，全存档能误报出几十个「塔」；
+  - 地狱岩类：`netherrack ≥ 500 && soul_sand ≥ 300`。只数 netherrack 不可行——自然岩浆区一个 chunk 就有 2783 块；
+    加上 soul sand 门槛后，同存档的自然地形最高 149、地下残段 166，只有真塔（866）能过；
   - 去重从 24 格收到 16 格，且**不同材质不合并**：相邻的两座不同类型塔此前会被并成一座。
 - **变体**：新增 `Cobblestone Tower` / `Mossy Cobblestone Tower` / `Netherrack Tower`，变体搜索只认扫描结果（worldMap 与 positions 文件没有类型，不能硬猜）。
 - **暂未启用**：SandStone / Ice / Jungle / SmoothStone 四种。砂岩与冰在自己的生物群系里自然成片，直接按数量判定会大量误报，需要先做塔形校验（四角柱 + 中空）。
-- **全存档复扫**（64 region）：14 座，其中 cobblestone 4 座、cobblestonemossy 4 座、netherrack 6 座。
+- **全存档复扫**（64 region）：9 座，其中 cobblestone 4 座、cobblestonemossy 4 座、netherrack 1 座（`(2247, 5063)`，旁边 70 格即 `(2311, 5031)` 的纯圆石高塔）。
 
 ## 5. Doomlike：主题可重放（2026-11-03）
 
