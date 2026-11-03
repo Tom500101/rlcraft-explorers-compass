@@ -285,3 +285,18 @@
   `rowSource` / `rowId`，中英两份 lang 同步。
 - **未做**：`GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，与新的扁平主题不一致；
   它不在本轮范围内，下一轮可复用 `GuiTheme` 一并换掉。
+
+## 9. 待办
+
+1. **`UltraRarePredictor` 的 vanilla 锚点还没接枚举器**（`locate/impl/UltraRarePredictor.java` 类注释的 tier 2）。
+   目前 `hasVanillaAnchor` 只能判断「这个结构声明了 vanilla 生成信息」，候选仍然全部退回生物群系层，
+   给的是「有资格」而不是「原版结构所在位置」。
+   下一步：把 §6 的 `MapGenLocator.enumerateCandidates` 接进来，按 `vanilla` 段的结构类型映射
+   （stronghold / village / temple / monument / mansion / mineshaft）复用对应 salt 与 spacing，
+   命中点直接作为候选，来源标 `vanilla anchor`。
+2. **BattleTowers 的预测公式已回滚**：上一轮按 `BattletowerPositionsFile` 的网格公式预测塔位，
+   实机核对发现与真实塔位的**奇偶**不符（预测点与实测塔成对错位），代码已撤，
+   当前只剩 region 扫描（§4）这条记录型路径。
+   下一步要**受控实验**：固定种子 + 已知塔位序列（逐个 `/tp` 验证），先证伪「偏移是常量还是按 chunk 奇偶」，
+   再决定是否重写；实验结论出来前不要把公式放回主路径。
+3. `GuiSuggestionWarehouse` 仍是原版 `drawDefaultBackground` + `GuiButton`，与 §8 的扁平主题不一致。
