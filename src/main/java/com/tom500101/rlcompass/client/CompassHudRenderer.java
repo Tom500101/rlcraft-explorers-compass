@@ -4,6 +4,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.entity.EntityPlayerSP;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.gui.Gui;
+import net.minecraft.client.resources.I18n;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.EnumHand;
 import net.minecraft.util.math.BlockPos;
@@ -101,6 +102,15 @@ public class CompassHudRenderer {
             return;
         }
         Minecraft minecraft = Minecraft.getMinecraft();
+        if (minecraft.player == null || minecraft.world == null) {
+            return;
+        }
+        // While the answer is in flight, replace the target line with a progress line: a themed
+        // search can take a second or more, and a frozen screen reads as "nothing happened".
+        if (ClientSearchStatus.isSearching()) {
+            drawSearching(minecraft, event);
+            return;
+        }
         EntityPlayerSP player = activePlayer(minecraft.player);
         if (player == null) {
             return;
@@ -156,8 +166,26 @@ public class CompassHudRenderer {
         }
     }
 
-    private static String buildLine(double distance, String point, BlockPos target) {
-        String label = StructureNameUtil.displayName(ClientCompassState.getStructureId());
+    /** "Searching" plus three dots riding a sine wave, drawn where the target line normally sits. */
+    private static void drawSearching(Minecraft minecraft, RenderGameOverlayEvent.Post event) {
+        float screenWidth = event.getResolution().getScaledWidth();
+        float screenHeight = event.getResolution().getScaledHeight();
+        String label = I18n.format("rlcompass.hud.searching");
+        int textWidth = minecraft.fontRenderer.getStringWidth(label);
+        int dotsWidth = 3 * 5;
+        int x = Math.round(screenWidth / 2.0F) - (textWidth + dotsWidth) / 2;
+        int y = Math.round(screenHeight / 2.0F) + 54;
+        Gui.drawRect(x - 2, y - 1, x + textWidth + dotsWidth + 2, y + 9, 0x70000000);
+        minecraft.fontRenderer.drawStringWithShadow(label, x, y, 0xFFFFFF);
+        long phase = System.currentTimeMillis() % 1200L;
+        for (int i = 0; i < 3; i++) {
+            double angle = (phase / 1200.0D) * Math.PI * 2.0D - i * 0.8D;
+            int offset = (int) Math.round(Math.sin(angle) * 2.0D);
+            minecraft.fontRenderer.drawStringWithShadow(".", x + textWidth + 2 + i * 5, y + offset, 0xFFD966);
+        }
+    }
+
+    private static String buildLine(double distance, String point, BlockPos target) {        String label = StructureNameUtil.displayName(ClientCompassState.getStructureId());
         StringBuilder line = new StringBuilder();
         line.append("Compass: ").append(label).append("  ").append(Math.round(distance)).append(" m");
         if (CompassConfig.showExactCoordinates) {

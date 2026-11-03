@@ -4,6 +4,7 @@ import io.netty.buffer.ByteBuf;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.text.TextComponentTranslation;
 import net.minecraftforge.fml.common.network.ByteBufUtils;
 import net.minecraftforge.fml.common.network.simpleimpl.IMessage;
 import net.minecraftforge.fml.common.network.simpleimpl.IMessageHandler;
@@ -11,6 +12,8 @@ import net.minecraftforge.fml.common.network.simpleimpl.MessageContext;
 import net.minecraftforge.fml.relauncher.Side;
 
 import com.tom500101.rlcompass.client.ClientCompassState;
+import com.tom500101.rlcompass.client.ClientSearchStatus;
+import com.tom500101.rlcompass.util.StructureNameUtil;
 
 /**
  * Server to client: the outcome of a compass search.
@@ -53,6 +56,11 @@ public class PacketStructureResult implements IMessage {
 
     public static PacketStructureResult notFound(String structureId, int dimension) {
         return new PacketStructureResult(false, structureId, dimension, null, null, false);
+    }
+
+    /** Negative outcome for a themed search, so the client can say which theme came up empty. */
+    public static PacketStructureResult notFound(String structureId, int dimension, String variantId) {
+        return new PacketStructureResult(false, structureId, dimension, null, variantId, false);
     }
 
     public boolean isFound() {
@@ -127,16 +135,43 @@ public class PacketStructureResult implements IMessage {
             Minecraft.getMinecraft().addScheduledTask(new Runnable() {
                 @Override
                 public void run() {
+                    ClientSearchStatus.end();
                     if (message.isFound()) {
                         ClientCompassState.setTarget(message.getStructureId(), message.getPos(),
                                 message.getDimension(), message.getVariantId(),
                                 message.isVariantConfirmed());
                     } else {
                         ClientCompassState.clear();
+                        // A miss used to be completely silent: the target simply vanished. Say which
+                        // structure (and theme, when one was picked) came up empty.
+                        Minecraft.getMinecraft().ingameGUI.getChatGUI().printChatMessage(
+                                new TextComponentTranslation("rlcompass.search.notFound",
+                                        describe(message.getStructureId(), message.getVariantId())));
                     }
                 }
             });
             return null;
+        }
+
+        /** "Ice Roguelike Dungeon" for a themed search, "Village" for a plain one. */
+        private static String describe(String structureId, String variantId) {
+            String parent = StructureNameUtil.displayName(structureId);
+            if (variantId == null || variantId.isEmpty()) {
+                return parent;
+            }
+            int slash = variantId.lastIndexOf('/');
+            String theme = slash >= 0 ? variantId.substring(slash + 1) : variantId;
+            StringBuilder pretty = new StringBuilder();
+            for (String part : theme.split("_")) {
+                if (part.isEmpty()) {
+                    continue;
+                }
+                if (pretty.length() > 0) {
+                    pretty.append(' ');
+                }
+                pretty.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+            }
+            return pretty.length() == 0 ? parent : pretty + " " + parent;
         }
     }
 }

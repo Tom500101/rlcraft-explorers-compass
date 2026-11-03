@@ -74,7 +74,7 @@ public class ItemExplorersCompass extends Item {
         StructureResult result = StructureLocatorRegistry.get()
                 .findNearest(world, origin, structureId, CompassConfig.searchRadius, variantId);
         if (result == null) {
-            PacketHandler.sendToPlayer(PacketStructureResult.notFound(structureId, dimension), player);
+            PacketHandler.sendToPlayer(PacketStructureResult.notFound(structureId, dimension, variantId), player);
         } else {
             PacketHandler.sendToPlayer(PacketStructureResult.found(result.getStructureId(), result.getPos(),
                     dimension, result.getVariantId(), result.isVariantConfirmed()), player);

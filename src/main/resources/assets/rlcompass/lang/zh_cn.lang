@@ -16,3 +16,9 @@ gui.rlcompass.sortName=名称
 gui.rlcompass.sortSource=来源
 gui.rlcompass.rowSource=来源: %s
 gui.rlcompass.rowId=ID: %s
+
+# 搜索无结果时的聊天提示
+rlcompass.search.notFound=搜索范围内没有找到 %s
+
+# 搜索进行中的 HUD 提示
+rlcompass.hud.searching=搜索中

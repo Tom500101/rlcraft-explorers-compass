@@ -252,8 +252,10 @@ public final class StructureLocatorRegistry {
             }
         }
 
-        LOG.info("[REGISTRY] findNearest({}) from ({}, {}) -> {} ({} ms)",
-                structureId, playerPos.getX(), playerPos.getZ(), best,
+        LOG.info("[REGISTRY] findNearest({}{}) from ({}, {}) -> {} ({} ms)",
+                structureId,
+                variantId == null || variantId.isEmpty() ? "" : " variant=" + variantId,
+                playerPos.getX(), playerPos.getZ(), best,
                 System.currentTimeMillis() - searchStartedAt);
         return best;
     }

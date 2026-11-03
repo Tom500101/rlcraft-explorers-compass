@@ -16,3 +16,9 @@ gui.rlcompass.sortName=Name
 gui.rlcompass.sortSource=Source
 gui.rlcompass.rowSource=Source: %s
 gui.rlcompass.rowId=ID: %s
+
+# shown in chat when a search finds nothing
+rlcompass.search.notFound=No %s found within the search radius
+
+# HUD line while a search is in flight
+rlcompass.hud.searching=Searching
