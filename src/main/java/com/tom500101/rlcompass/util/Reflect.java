@@ -108,9 +108,15 @@ public final class Reflect {
         return method == null ? null : invoke(target, method);
     }
 
-    /** Invokes an already-resolved method, or returns {@code null} on any failure. */
+    /**
+     * Invokes an already-resolved method, or returns {@code null} on any failure.
+     *
+     * <p>{@code target} may be {@code null}: that is how a static method is invoked. Callers that
+     * look a method up by name must still pass an instance, because the name alone cannot pick a
+     * class — see {@link #invokeStatic(Class, String, Class[], Object...)}.
+     */
     public static Object invoke(Object target, Method method, Object... args) {
-        if (target == null || method == null) {
+        if (method == null) {
             return null;
         }
         try {

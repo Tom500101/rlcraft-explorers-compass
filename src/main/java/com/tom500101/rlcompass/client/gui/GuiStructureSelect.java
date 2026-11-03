@@ -15,6 +15,7 @@ import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.resources.I18n;
 import net.minecraft.init.SoundEvents;
 
+import com.tom500101.rlcompass.client.ClientSearchStatus;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureVariant;
 import com.tom500101.rlcompass.network.PacketHandler;
@@ -248,6 +249,8 @@ public class GuiStructureSelect extends GuiScreen {
         }
         mc.getSoundHandler().playSound(
                 PositionedSoundRecord.getMasterRecord(SoundEvents.UI_BUTTON_CLICK, 1.0F));
+        // A themed search can take a second or more on the server; the HUD shows the wait.
+        ClientSearchStatus.begin();
         PacketHandler.channel().sendToServer(new PacketSearchRequest(parentId, variantId));
         mc.displayGuiScreen(null);
     }
@@ -374,9 +377,16 @@ public class GuiStructureSelect extends GuiScreen {
                 : null;
 
         String filter = searchBox == null ? "" : searchBox.getText();
+        boolean typing = filter != null && !filter.trim().isEmpty();
         List<StructureSearchEntry> visibleParents = new ArrayList<StructureSearchEntry>();
         for (StructureSearchEntry entry : allEntries) {
-            if (entry.matches(filter)) {
+            // A needle that only matches a child has to keep its parent visible, otherwise typing
+            // "Ice Dungeon" would filter the whole Roguelike row away and show nothing.
+            if (entry.matches(filter) || (typing && entry.hasMatchingVariant(filter))) {
+                if (typing && entry.hasMatchingVariant(filter)) {
+                    // Show the hits without requiring the user to expand first.
+                    entry.setExpanded(true);
+                }
                 visibleParents.add(entry);
             }
         }

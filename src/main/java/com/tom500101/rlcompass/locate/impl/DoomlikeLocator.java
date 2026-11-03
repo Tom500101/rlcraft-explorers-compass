@@ -47,6 +47,9 @@ public class DoomlikeLocator implements IStructureLocator {
     private static final Logger LOG = LogManager.getLogger("rlcompass");
 
     private static final String HANDLER_CLASS = "jaredbgreat.dldungeons.GenerationHandler";
+    private static final String SPATIAL_HASH_CLASS = "jaredbgreat.dldungeons.util.math.SpatialHash";
+    private static final String BIOME_SETS_CLASS = "jaredbgreat.dldungeons.themes.BiomeSets";
+    private static final String THEME_CLASS = "jaredbgreat.dldungeons.themes.Theme";
 
     /** Doomlike ships one config file per theme; the file name is the theme name. */
     private static final String THEME_DIRECTORY = "DLDungeonsJBG/themes";
@@ -58,8 +61,11 @@ public class DoomlikeLocator implements IStructureLocator {
 
     private boolean resolved;
     private Method isDungeonCenter;
+    private Method randomFromSeed;
+    private Method getTheme;
     private Object handler;
     private boolean warnedMissing;
+    private boolean warnedReplay;
 
     @Override
     public Collection<String> getSupportedIds() {
@@ -73,6 +79,14 @@ public class DoomlikeLocator implements IStructureLocator {
 
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
+        return search(world, playerPos, radius, null);
+    }
+
+    /**
+     * A themed search replays {@code BiomeSets.getTheme(biome, random, dimension)} with the same
+     * {@code Random} the generator uses, so the answer is the real theme, not a label.
+     */
+    private StructureResult search(World world, BlockPos playerPos, int radius, String variantId) {
         resolve();
         if (isDungeonCenter == null || handler == null) {
             if (!warnedMissing) {
@@ -80,6 +94,13 @@ public class DoomlikeLocator implements IStructureLocator {
                 LOG.info("[DOOMLIKE] Doomlike Dungeons is not installed; {} stays unavailable", STRUCTURE_ID);
             }
             return null;
+        }
+        if (variantId != null && (randomFromSeed == null || getTheme == null)) {
+            if (!warnedReplay) {
+                warnedReplay = true;
+                LOG.info("[DOOMLIKE] theme replay unavailable; themed searches fall back to the parent");
+            }
+            variantId = null;
         }
 
         long seed = world.getSeed();
@@ -90,6 +111,7 @@ public class DoomlikeLocator implements IStructureLocator {
         double maxDistanceSq = (double) radius * (double) radius;
         long budget = CHECK_BUDGET;
         long startedAt = System.currentTimeMillis();
+        String wanted = variantId == null ? null : variantSuffix(variantId);
 
         for (int ring = 0; ring <= maxRing; ring++) {
             for (int dx = -ring; dx <= ring; dx++) {
@@ -108,11 +130,23 @@ public class DoomlikeLocator implements IStructureLocator {
                     if (!(hit instanceof Boolean) || !((Boolean) hit)) {
                         continue;
                     }
+                    if (wanted != null) {
+                        String theme = themeAt(world, seed, dimension, chunkX, chunkZ);
+                        if (theme == null || !wanted.equals(theme)) {
+                            continue;
+                        }
+                    }
                     BlockPos candidate = new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
                     if (StructureResult.horizontalDistanceSq(candidate, playerPos) > maxDistanceSq) {
                         continue;
                     }
-                    return StructureResult.of(STRUCTURE_ID, candidate, sourceName(), playerPos);
+                    StructureResult result = StructureResult.of(STRUCTURE_ID, candidate, sourceName(), playerPos);
+                    if (variantId == null) {
+                        return result;
+                    }
+                    LOG.info("[DOOMLIKE] {} at ({}, {}) uses theme {}", variantId,
+                            candidate.getX(), candidate.getZ(), wanted);
+                    return result.withVariant(variantId, true);
                 }
             }
         }
@@ -120,9 +154,49 @@ public class DoomlikeLocator implements IStructureLocator {
     }
 
     /**
-     * Themes are config files; the directory is the only reliable list. There is no runtime theme
-     * query, so these are CONFIG_FILE variants: the picker can list them, but a search can never
-     * confirm which theme the generator actually placed.
+     * Replays the theme choice for one dungeon chunk. {@code Builder.placeDungeon} builds the
+     * {@code Dungeon} with {@code SpatialHash.randomFromSeed(worldSeed, chunkX, chunkZ, dim)}, and
+     * the first consumer of that random is {@code BiomeSets.getTheme(biome, random, dim)} — the same
+     * order used here.
+     */
+    private String themeAt(World world, long seed, int dimension, int chunkX, int chunkZ) {
+        Object random = Reflect.invoke(null, randomFromSeed, seed, chunkX, chunkZ, dimension);
+        if (!(random instanceof java.util.Random)) {
+            return null;
+        }
+        Object biome = world.getBiome(new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8));
+        Object theme = Reflect.invoke(null, getTheme, biome, random, dimension);
+        if (theme == null) {
+            return null;
+        }
+        Object name = Reflect.read(theme, "name");
+        return name == null ? null : normalizeThemeName(String.valueOf(name));
+    }
+
+    /** {@code doomlike:dungeon/desert} becomes {@code desert}. */
+    private static String variantSuffix(String variantId) {
+        int slash = variantId.lastIndexOf('/');
+        return (slash < 0 ? variantId : variantId.substring(slash + 1)).toLowerCase(Locale.ROOT);
+    }
+
+    /** {@code .../themes/desert.cfg} and {@code desert} both become {@code desert}. */
+    private static String normalizeThemeName(String raw) {
+        String name = raw;
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        return name.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Themes are config files; the directory is the complete list. The generator picks one per
+     * dungeon from the same list, and {@link #themeAt} can now replay that choice, so a row here is
+     * a real filter.
      */
     @Override
     public List<StructureVariant> getVariants(World world) {
@@ -158,29 +232,21 @@ public class DoomlikeLocator implements IStructureLocator {
         return variants;
     }
 
-    /**
-     * The marker matches {@link RoguelikeLocator}: Doomlike also picks the theme while generating
-     * and stores nothing, so a row here is a label the search cannot filter on.
-     */
+    /** {@code desert.cfg} becomes {@code Desert Dungeon}; the theme is replayable, so no marker. */
     private static String displayNameFor(String theme) {
         if (theme.isEmpty()) {
-            return "Dungeon ≈";
+            return "Dungeon";
         }
-        return Character.toUpperCase(theme.charAt(0)) + theme.substring(1) + " Dungeon ≈";
+        return Character.toUpperCase(theme.charAt(0)) + theme.substring(1) + " Dungeon";
     }
 
-    /**
-     * Themed search is a request for the parent plus a label: Doomlike picks the theme at
-     * generation time and exposes no lookup, so the result is always marked unconfirmed.
-     */
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
                                        String variantId) {
-        StructureResult result = findNearest(world, playerPos, structureId, radius);
-        if (result == null || variantId == null || variantId.isEmpty()) {
-            return result;
+        if (variantId == null || variantId.isEmpty()) {
+            return findNearest(world, playerPos, structureId, radius);
         }
-        return result.withVariant(variantId, false);
+        return search(world, playerPos, radius, variantId);
     }
 
     private void resolve() {
@@ -203,6 +269,20 @@ public class DoomlikeLocator implements IStructureLocator {
                 World.class, long.class, int.class, int.class, int.class);
         if (isDungeonCenter == null) {
             LOG.warn("[DOOMLIKE] could not resolve GenerationHandler.isDungeonCenter(...)");
+        }
+
+        Class<?> spatialHash = Reflect.findClass(SPATIAL_HASH_CLASS);
+        if (spatialHash != null) {
+            randomFromSeed = Reflect.findMethod(spatialHash, "randomFromSeed",
+                    long.class, int.class, int.class, int.class);
+        }
+        Class<?> biomeSets = Reflect.findClass(BIOME_SETS_CLASS);
+        if (biomeSets != null) {
+            getTheme = Reflect.findMethod(biomeSets, "getTheme",
+                    net.minecraft.world.biome.Biome.class, java.util.Random.class, int.class);
+        }
+        if (randomFromSeed == null || getTheme == null) {
+            LOG.info("[DOOMLIKE] theme replay unavailable; themed searches fall back to the parent");
         }
     }
 }

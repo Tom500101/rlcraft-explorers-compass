@@ -11,6 +11,7 @@ import java.util.Set;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraftforge.fml.common.Loader;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -39,8 +40,20 @@ import com.tom500101.rlcompass.util.Reflect;
  *
  * <p>{@code canSpawnInChunk} hashes the chunk coordinates and touches no world blocks, so walking
  * chunk rings outward is cheap — unlike mineshafts, where every candidate called {@code getBiome}.
- * The reported position is the chunk centre; the mod picks the exact spot inside the chunk with its
- * own random, which we deliberately do not reproduce.
+ *
+ * <h2>Why the chunk centre is not the dungeon</h2>
+ * {@code canSpawnInChunk} is only the frequency/chance gate: on this pack every 51st chunk passes it
+ * and {@code spawnChance=1.0}, so <em>every</em> candidate chunk passes. The real spot comes from
+ * {@code Dungeon.selectLocation(random, chunkX*16, chunkZ*16)}, which draws up to
+ * {@code spawnAttempts} points in a circle of radius {@code spawnFrequency*16/2} — 408 blocks here —
+ * and keeps the first one whose terrain passes {@code canGenerateDungeonHere}. A chunk whose ten
+ * attempts all fail generates nothing at all. Reporting the chunk centre therefore landed the player
+ * up to 408 blocks away from a dungeon that might not exist; a real report had them teleport into
+ * open ocean and find nothing after digging through every y level.
+ *
+ * <p>We replay that call instead of re-implementing it: {@code selectLocation} is invoked
+ * reflectively with the same Forge chunk random the generator receives, so the returned coordinate
+ * is the mod's own answer, not a re-derivation that could drift from it.
  *
  * <h2>Theme lookup</h2>
  * The theme is not stored anywhere, but it is <em>reproducible</em>: every generation call builds a
@@ -71,9 +84,33 @@ public class RoguelikeLocator implements IStructureLocator {
     private static final String LEVEL_SETTINGS_CLASS =
             "greymerk.roguelike.dungeon.settings.LevelSettings";
     private static final String COORD_CLASS = "greymerk.roguelike.worldgen.Coord";
+    private static final String ROGUE_CONFIG_CLASS = "greymerk.roguelike.config.RogueConfig";
+    /** Config entry listing vanilla structures whose neighbourhood vetoes a spawn. */
+    private static final String STRUCTURE_DISTANCE_CONFIG =
+            "VANILLA_STRUCTURES_TO_CHECK_MINIMUM_DISTANCE_FROM";
+    private static final String UPPER_LIMIT_CONFIG = "UPPERLIMIT";
+    /** {@code Dungeon.generate} pins the dungeon origin to this y; the tower builds upward. */
+    private static final int DUNGEON_ORIGIN_Y = 50;
 
     /** Hard cap so a huge radius cannot stall the server. */
     private static final long CHECK_BUDGET = 200_000L;
+    /**
+     * A spawn-candidate chunk is only worth replaying up to this many times per search. Each replay
+     * reads blocks (and may load the chunk), so an ocean full of failed candidates must not turn a
+     * search into a chunk-loading marathon.
+     */
+    private static final int MAX_SPAWN_CHECKS = 16;
+    /**
+     * A themed search has to replay the origin for every candidate (the theme is only knowable at
+     * the real position), so it is bounded by this many nearest grid chunks instead of the full
+     * grid. 40 chunks at 51-chunk spacing covers roughly a 2000-block radius around the player.
+     */
+    private static final int MAX_THEMED_CANDIDATES = 40;
+
+    /** Marks a variant that names a config setting instead of an enum theme. */
+    private static final String SETTING_MARKER = "/setting/";
+    /** Settings directories that hold choosable dungeons (not reusable components). */
+    private static final String[] SETTING_DIRS = {"builtin", "fnar"};
 
     public static final String STRUCTURE_ID = "roguelike:dungeon";
 
@@ -92,11 +129,24 @@ public class RoguelikeLocator implements IStructureLocator {
     private Method chooseDungeonSetting;
     private java.lang.reflect.Constructor<?> coordConstructor;
     private Method settingsGetLevels;
+    private Method settingsGetId;
     private Method levelGetTheme;
     private Method themeGetBase;
     /** One INFO sample per session is enough to confirm the replay against a visited dungeon. */
     private boolean loggedThemeSample;
     private boolean themeDiagLogged;
+
+    /**
+     * Exact-origin replay. The mod's {@code selectLocation} returns only the first point whose
+     * terrain check passes, and that check depends on neighbour chunks that were still being built
+     * during population — replaying it on a finished world can pick an earlier attempt that never
+     * received a dungeon. We therefore walk all {@code spawnAttempts} points ourselves and take the
+     * first one that actually carries dungeon blocks.
+     */
+    private boolean originLookupResolved;
+    private int spawnFrequency;
+    private int spawnAttempts = 10;
+    private int upperLimit = 100;
 
     @Override
     public Collection<String> getSupportedIds() {
@@ -110,14 +160,15 @@ public class RoguelikeLocator implements IStructureLocator {
 
     @Override
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius) {
-        return findNearest(world, playerPos, radius, null);
+        return findNearest(world, playerPos, radius, null, null);
     }
 
     /**
-     * {@code requiredTheme} is an enum constant name (e.g. {@code STONE}) when the caller wants a
-     * specific theme, or {@code null} for "any dungeon".
+     * {@code requiredTheme} is an enum constant name (e.g. {@code STONE}); {@code requiredSetting} is
+     * a settings id from the config (e.g. {@code fnar:dungeon_ocean_temple}). Either may be null.
      */
-    private StructureResult findNearest(World world, BlockPos playerPos, int radius, String requiredTheme) {
+    private StructureResult findNearest(World world, BlockPos playerPos, int radius,
+                                        String requiredTheme, String requiredSetting) {
         resolve();
         if (canSpawnInChunk == null || worldEditorClass == null) {
             if (!warnedMissing) {
@@ -136,53 +187,265 @@ public class RoguelikeLocator implements IStructureLocator {
         int maxRing = Math.max(1, radius >> 4);
         double maxDistanceSq = (double) radius * (double) radius;
         long budget = CHECK_BUDGET;
+        boolean themed = requiredTheme != null || requiredSetting != null;
+        SearchState state = new SearchState(themed, requiredTheme, requiredSetting);
 
-        for (int ring = 0; ring <= maxRing; ring++) {
-            for (int dx = -ring; dx <= ring; dx++) {
-                for (int dz = -ring; dz <= ring; dz++) {
-                    if (Math.abs(dx) != ring && Math.abs(dz) != ring) {
-                        continue;
+        // The vanilla-structure distance scan inside canGenerateDungeonHere walks thousands of
+        // chunks; it only ever vetoes spawns within 8 blocks of a village/temple, so it is disabled
+        // for the duration of the replay and restored right after.
+        {
+            if (spawnFrequency > 1) {
+                // canSpawnInChunk only accepts chunkX%f==0 && chunkZ%f==0, so walking every chunk in
+                // the radius is wasted work: on this pack it is 200k hash calls for ~600 real
+                // candidates, which used to cost 2.3 s. Enumerate the grid instead.
+                int index = 0;
+                for (int[] candidate : gridCandidates(playerPos, radius)) {
+                    if (themed && ++index > MAX_THEMED_CANDIDATES) {
+                        break;
                     }
-                    if (--budget < 0) {
-                        LOG.warn("[ROGUELIKE] gave up after {} chunk checks (radius {})", CHECK_BUDGET, radius);
+                    StructureResult result = tryChunk(world, editor, playerPos,
+                            candidate[0], candidate[1], state, maxDistanceSq);
+                    if (result != null) {
+                        return result;
+                    }
+                    if (state.stop) {
                         return null;
                     }
-                    int chunkX = centerChunkX + dx;
-                    int chunkZ = centerChunkZ + dz;
-                    Object hit;
-                    try {
-                        hit = canSpawnInChunk.invoke(null, chunkX, chunkZ, editor);
-                    } catch (Throwable t) {
-                        if (!loggedFailure) {
-                            loggedFailure = true;
-                            Throwable cause = t.getCause() == null ? t : t.getCause();
-                            LOG.warn("[ROGUELIKE] canSpawnInChunk threw {}: {}",
-                                    cause.getClass().getName(), cause.getMessage());
+                }
+            } else {
+                for (int ring = 0; ring <= maxRing; ring++) {
+                    for (int dx = -ring; dx <= ring; dx++) {
+                        for (int dz = -ring; dz <= ring; dz++) {
+                            if (Math.abs(dx) != ring && Math.abs(dz) != ring) {
+                                continue;
+                            }
+                            if (--budget < 0) {
+                                LOG.warn("[ROGUELIKE] gave up after {} chunk checks (radius {})",
+                                        CHECK_BUDGET, radius);
+                                return null;
+                            }
+                            StructureResult result = tryChunk(world, editor, playerPos,
+                                    centerChunkX + dx, centerChunkZ + dz, state, maxDistanceSq);
+                            if (result != null) {
+                                return result;
+                            }
+                            if (state.stop) {
+                                return null;
+                            }
                         }
-                        return null;
                     }
-                    if (!(hit instanceof Boolean) || !((Boolean) hit)) {
-                        continue;
-                    }
-                    BlockPos candidate = new BlockPos((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
-                    if (StructureResult.horizontalDistanceSq(candidate, playerPos) > maxDistanceSq) {
-                        continue;
-                    }
-                    String theme = themeNameAt(world, chunkX, chunkZ);
-                    if (requiredTheme == null) {
-                        if (!loggedThemeSample && theme != null) {
-                            loggedThemeSample = true;
-                            LOG.info("[ROGUELIKE] nearest dungeon at chunk ({}, {}) uses theme {}",
-                                    chunkX, chunkZ, theme);
-                        }
-                    } else if (theme == null || !requiredTheme.equalsIgnoreCase(theme)) {
-                        continue;
-                    }
-                    return StructureResult.of(STRUCTURE_ID, candidate, sourceName(), playerPos);
                 }
             }
         }
         return null;
+    }
+
+    /** Mutable counters for one search; kept out of fields so concurrent searches cannot mix. */
+    private static final class SearchState {
+        final boolean themed;
+        final String requiredTheme;
+        final String requiredSetting;
+        int originRejections;
+        boolean stop;
+        boolean loggedSample;
+
+        SearchState(boolean themed, String requiredTheme, String requiredSetting) {
+            this.themed = themed;
+            this.requiredTheme = requiredTheme;
+            this.requiredSetting = requiredSetting;
+        }
+    }
+
+    /** One candidate chunk: gate, exact origin, block fingerprint, theme confirm. */
+    private StructureResult tryChunk(World world, Object editor, BlockPos playerPos,
+                                     int chunkX, int chunkZ, SearchState state, double maxDistanceSq) {
+        if (!spawnAllowed(chunkX, chunkZ, editor)) {
+            return null;
+        }
+        // No theme pre-filter at the chunk centre: the origin may sit up to 408 blocks away and in
+        // a different biome, so a centre-based guess both wastes work and silently drops real
+        // dungeons (a known ocean temple had its origin ~190 blocks from the chunk centre).
+        BlockPos origin = originFor(world, chunkX, chunkZ);
+        if (origin == null) {
+            return rejectOrigin(state, chunkX, chunkZ);
+        }
+        if (StructureResult.horizontalDistanceSq(origin, playerPos) > maxDistanceSq) {
+            return null;
+        }
+        if (state.themed && !variantMatches(world, origin.getX(), origin.getZ(),
+                state.requiredTheme, state.requiredSetting)) {
+            return null;
+        }
+        if (!state.themed && !state.loggedSample) {
+            state.loggedSample = true;
+            String[] resolved = resolveAt(world, origin.getX(), origin.getZ());
+            if (resolved != null && resolved[0] != null) {
+                LOG.info("[ROGUELIKE] nearest dungeon at ({}, {}) uses theme {} ({})",
+                        origin.getX(), origin.getZ(), resolved[0], resolved[1]);
+            } else if (resolved != null) {
+                LOG.info("[ROGUELIKE] nearest dungeon at ({}, {}) uses settings {}",
+                        origin.getX(), origin.getZ(), resolved[1]);
+            }
+        }
+        return StructureResult.of(STRUCTURE_ID, origin, sourceName(), playerPos);
+    }
+
+    private StructureResult rejectOrigin(SearchState state, int chunkX, int chunkZ) {
+        if (originLookupReady() && ++state.originRejections >= MAX_SPAWN_CHECKS) {
+            state.stop = true;
+            LOG.info("[ROGUELIKE] {} candidate chunks near ({}, {}) had no dungeon after replay + "
+                    + "block check; nothing to report", state.originRejections, chunkX, chunkZ);
+        }
+        return null;
+    }
+
+    /** Every chunk the frequency gate can accept, nearest first. */
+    private List<int[]> gridCandidates(BlockPos playerPos, int radius) {
+        int step = spawnFrequency;
+        int minChunkX = (playerPos.getX() - radius) >> 4;
+        int maxChunkX = (playerPos.getX() + radius) >> 4;
+        int minChunkZ = (playerPos.getZ() - radius) >> 4;
+        int maxChunkZ = (playerPos.getZ() + radius) >> 4;
+        int startX = minChunkX - Math.floorMod(minChunkX, step);
+        int startZ = minChunkZ - Math.floorMod(minChunkZ, step);
+        final int px = playerPos.getX();
+        final int pz = playerPos.getZ();
+        List<int[]> out = new ArrayList<int[]>();
+        for (int chunkX = startX; chunkX <= maxChunkX; chunkX += step) {
+            for (int chunkZ = startZ; chunkZ <= maxChunkZ; chunkZ += step) {
+                out.add(new int[]{chunkX, chunkZ});
+            }
+        }
+        Collections.sort(out, new java.util.Comparator<int[]>() {
+            @Override
+            public int compare(int[] a, int[] b) {
+                long da = chunkDistanceSq(a[0], a[1], px, pz);
+                long db = chunkDistanceSq(b[0], b[1], px, pz);
+                return da < db ? -1 : (da > db ? 1 : 0);
+            }
+        });
+        return out;
+    }
+
+    private static long chunkDistanceSq(int chunkX, int chunkZ, int blockX, int blockZ) {
+        long dx = (long) (chunkX << 4) + 8 - blockX;
+        long dz = (long) (chunkZ << 4) + 8 - blockZ;
+        return dx * dx + dz * dz;
+    }
+
+    /**
+     * True when the column at {@code (blockX, blockZ)} actually carries dungeon material. Every
+     * Roguelike theme shares this vocabulary (walls, pillars, doors, spawners, chests), so this is
+     * what turns a replayed coordinate into "a dungeon really exists here".
+     *
+     * <p>Two passes: a small core first, because most of the ten attempts per chunk land on empty
+     * terrain and the full 9x9x29 box would be 2000 block reads each.
+     */
+    private boolean looksLikeDungeon(World world, int blockX, int blockZ) {
+        if (countDungeonBlocks(world, blockX, blockZ, 2, -4, 12, 8) < 8) {
+            return false;
+        }
+        return countDungeonBlocks(world, blockX, blockZ, 4, -8, 20, 24) >= 24;
+    }
+
+    private int countDungeonBlocks(World world, int blockX, int blockZ, int radius,
+                                   int dyMin, int dyMax, int stopAt) {
+        int hits = 0;
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dy = dyMin; dy <= dyMax; dy++) {
+                    cursor.setPos(blockX + dx, DUNGEON_ORIGIN_Y + dy, blockZ + dz);
+                    if (isDungeonBlock(world.getBlockState(cursor).getBlock()) && ++hits >= stopAt) {
+                        return hits;
+                    }
+                }
+            }
+        }
+        return hits;
+    }
+
+    private static boolean isDungeonBlock(net.minecraft.block.Block block) {
+        return block == net.minecraft.init.Blocks.STONEBRICK
+                || block == net.minecraft.init.Blocks.COBBLESTONE
+                || block == net.minecraft.init.Blocks.MOSSY_COBBLESTONE
+                || block == net.minecraft.init.Blocks.PRISMARINE
+                || block == net.minecraft.init.Blocks.QUARTZ_BLOCK
+                || block == net.minecraft.init.Blocks.IRON_BARS
+                || block == net.minecraft.init.Blocks.IRON_DOOR
+                || block == net.minecraft.init.Blocks.MOB_SPAWNER
+                || block == net.minecraft.init.Blocks.CHEST
+                || block == net.minecraft.init.Blocks.TORCH;
+    }
+
+    private boolean spawnAllowed(int chunkX, int chunkZ, Object editor) {
+        Object hit;
+        try {
+            hit = canSpawnInChunk.invoke(null, chunkX, chunkZ, editor);
+        } catch (Throwable t) {
+            if (!loggedFailure) {
+                loggedFailure = true;
+                Throwable cause = t.getCause() == null ? t : t.getCause();
+                LOG.warn("[ROGUELIKE] canSpawnInChunk threw {}: {}",
+                        cause.getClass().getName(), cause.getMessage());
+            }
+            return false;
+        }
+        return hit instanceof Boolean && (Boolean) hit;
+    }
+
+    /** Reads the theme/settings a dungeon would use at a block position; null when unreadable. */
+    private boolean variantMatches(World world, int blockX, int blockZ,
+                                   String requiredTheme, String requiredSetting) {
+        String[] resolved = resolveAt(world, blockX, blockZ);
+        if (resolved == null) {
+            return false;
+        }
+        if (requiredSetting != null) {
+            return resolved[1] != null && requiredSetting.equalsIgnoreCase(resolved[1]);
+        }
+        return resolved[0] != null && requiredTheme.equalsIgnoreCase(resolved[0]);
+    }
+
+    /**
+     * Walks the chunk's {@code spawnAttempts} candidate points in the order the generator drew them
+     * and returns the first one that actually carries dungeon blocks. Deliberately does not call
+     * {@code Dungeon.selectLocation}: that method stops at the first point whose terrain check
+     * passes, and the check reads neighbour chunks that were still half-built during population, so
+     * on a finished world it can stop on an attempt that never received a dungeon.
+     */
+    private BlockPos originFor(World world, int chunkX, int chunkZ) {
+        if (spawnFrequency <= 1 || spawnAttempts <= 0) {
+            return null;
+        }
+        java.util.Random random = chunkRandom(world.getSeed(), chunkX, chunkZ);
+        int radiusMax = spawnFrequency * 8;
+        for (int attempt = 0; attempt < spawnAttempts; attempt++) {
+            int radius = random.nextInt(radiusMax);
+            double angle = random.nextDouble() * 2.0 * Math.PI;
+            int x = (chunkX << 4) + (int) (Math.cos(angle) * radius);
+            int z = (chunkZ << 4) + (int) (Math.sin(angle) * radius);
+            if (looksLikeDungeon(world, x, z)) {
+                return new BlockPos(x, upperLimit, z);
+            }
+        }
+        return null;
+    }
+
+    private boolean originLookupReady() {
+        return spawnFrequency > 1 && spawnAttempts > 0;
+    }
+
+    /**
+     * The random Forge hands to every {@code IWorldGenerator} for a chunk. Rebuilt from the world
+     * seed so the replay draws exactly the numbers the generator drew.
+     */
+    private static java.util.Random chunkRandom(long worldSeed, int chunkX, int chunkZ) {
+        java.util.Random forge = new java.util.Random(worldSeed);
+        // GameRegistry.generateWorld writes ">> 2 + 1L", which Java parses as ">> 3".
+        long xSeed = forge.nextLong() >> 3;
+        long zSeed = forge.nextLong() >> 3;
+        return new java.util.Random((xSeed * chunkX + zSeed * chunkZ) ^ worldSeed);
     }
 
     /**
@@ -223,7 +486,9 @@ public class RoguelikeLocator implements IStructureLocator {
                     STRUCTURE_ID + "/" + name.toLowerCase(Locale.ROOT),
                     STRUCTURE_ID, displayNameFor(name), VariantSource.RUNTIME_API));
         }
-        LOG.info("[ROGUELIKE] {} theme variants ({})", built.size(), origin);
+        addSettingVariants(built);
+        LOG.info("[ROGUELIKE] {} variants ({} themes via {} + config settings)",
+                built.size(), names.size(), origin);
         variants = built.isEmpty()
                 ? Collections.<StructureVariant>emptyList()
                 : Collections.unmodifiableList(built);
@@ -284,6 +549,103 @@ public class RoguelikeLocator implements IStructureLocator {
     }
 
     /**
+     * Adds one variant per choosable dungeon setting. Pack authors define whole dungeons here with
+     * their own theme (the ocean temple is prismarine and quartz, not any enum theme), so without
+     * these rows those dungeons match no variant at all.
+     */
+    private static void addSettingVariants(List<StructureVariant> out) {
+        if (Loader.instance() == null) {
+            return;
+        }
+        java.io.File root = new java.io.File(Loader.instance().getConfigDir(),
+                "roguelike_dungeons/settings");
+        for (String sub : SETTING_DIRS) {
+            collectSettingFiles(new java.io.File(root, sub), out);
+        }
+    }
+
+    private static void collectSettingFiles(java.io.File dir, List<StructureVariant> out) {
+        java.io.File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (java.io.File file : files) {
+            if (file.isDirectory()) {
+                collectSettingFiles(file, out);
+                continue;
+            }
+            if (!file.getName().endsWith(".json")) {
+                continue;
+            }
+            String settingId = readSettingName(file);
+            if (settingId == null || settingId.isEmpty() || settingId.endsWith("_base")) {
+                continue;
+            }
+            out.add(new StructureVariant(STRUCTURE_ID + SETTING_MARKER + settingId, STRUCTURE_ID,
+                    settingDisplayName(settingId), VariantSource.CONFIG_FILE));
+        }
+    }
+
+    /** Reads the leading {@code "name"} field; a full JSON parser would be overkill here. */
+    private static String readSettingName(java.io.File file) {
+        java.io.BufferedReader reader = null;
+        try {
+            reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8));
+            String line;
+            int guard = 0;
+            while ((line = reader.readLine()) != null && guard++ < 20) {
+                int key = line.indexOf("\"name\"");
+                if (key < 0) {
+                    continue;
+                }
+                int first = line.indexOf('"', key + 6);
+                int second = first < 0 ? -1 : line.indexOf('"', first + 1);
+                if (first >= 0 && second > first) {
+                    return line.substring(first + 1, second);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Unreadable file: skip it rather than failing the whole variant list.
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (Throwable ignored) {
+                    // nothing to do
+                }
+            }
+        }
+        return null;
+    }
+
+    /** {@code fnar:dungeon_ocean_temple} becomes {@code Ocean Temple Dungeon}. */
+    private static String settingDisplayName(String settingId) {
+        String bare = settingId;
+        int colon = bare.indexOf(':');
+        if (colon >= 0) {
+            bare = bare.substring(colon + 1);
+        }
+        if (bare.startsWith("dungeon_")) {
+            bare = bare.substring("dungeon_".length());
+        }
+        if (bare.endsWith("_no_loot")) {
+            bare = bare.substring(0, bare.length() - "_no_loot".length());
+        }
+        StringBuilder out = new StringBuilder();
+        for (String part : bare.split("_")) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            if (out.length() > 0) {
+                out.append(' ');
+            }
+            out.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return out.length() == 0 ? "Dungeon" : out.append(" Dungeon").toString();
+    }
+
+    /**
      * {@code NETHER_FORTRESS} becomes {@code Nether Fortress Dungeon}. No marker: the theme is
      * replayed from the world seed, so a row here really is a filter the search can honour.
      */
@@ -310,14 +672,19 @@ public class RoguelikeLocator implements IStructureLocator {
     public StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
                                        String variantId) {
         if (variantId == null || variantId.isEmpty()) {
-            return findNearest(world, playerPos, radius, null);
+            return findNearest(world, playerPos, radius, null, null);
+        }
+        if (variantId.contains(SETTING_MARKER)) {
+            String setting = variantId.substring(variantId.indexOf(SETTING_MARKER) + SETTING_MARKER.length());
+            StructureResult bySetting = findNearest(world, playerPos, radius, null, setting);
+            return bySetting == null ? null : bySetting.withVariant(variantId, true);
         }
         String theme = themeFromVariantId(variantId);
         if (theme == null) {
-            StructureResult any = findNearest(world, playerPos, radius, null);
+            StructureResult any = findNearest(world, playerPos, radius, null, null);
             return any == null ? null : any.withVariant(variantId, false);
         }
-        StructureResult result = findNearest(world, playerPos, radius, theme);
+        StructureResult result = findNearest(world, playerPos, radius, theme, null);
         return result == null ? null : result.withVariant(variantId, true);
     }
 
@@ -348,6 +715,60 @@ public class RoguelikeLocator implements IStructureLocator {
             return;
         }
         resolveThemeLookup(editorInterface);
+        resolveOriginLookup();
+    }
+
+    /**
+     * Resolves the two numbers the origin replay needs: the chunk grid the frequency gate accepts
+     * and how many points the generator tries inside it. Both come from the mod, so a config change
+     * is followed without a code change.
+     */
+    private void resolveOriginLookup() {
+        if (originLookupResolved) {
+            return;
+        }
+        originLookupResolved = true;
+        Method frequency = Reflect.findMethod(dungeonClass, "getSpawnFrequency");
+        if (frequency != null) {
+            Object value = Reflect.invoke(null, frequency);
+            if (value instanceof Number) {
+                spawnFrequency = ((Number) value).intValue();
+            }
+        }
+        Class<?> configClass = Reflect.findClass(ROGUE_CONFIG_CLASS);
+        if (configClass != null) {
+            Method getInt = Reflect.findMethod(configClass, "getInt");
+            Object frequencyConfig = Reflect.readStatic(configClass, "DUNGEONS_SPAWN_FREQUENCY");
+            Object upper = Reflect.readStatic(configClass, UPPER_LIMIT_CONFIG);
+            Object attempts = Reflect.readStatic(configClass, "DUNGEONS_SPAWN_ATTEMPTS");
+            if (getInt != null) {
+                // Fallback if getSpawnFrequency() was unavailable: the same 3 * max(2, config)
+                // formula the method applies.
+                if (spawnFrequency <= 1 && frequencyConfig != null) {
+                    Object value = Reflect.invoke(frequencyConfig, getInt);
+                    if (value instanceof Number) {
+                        spawnFrequency = 3 * Math.max(2, ((Number) value).intValue());
+                    }
+                }
+                if (upper != null) {
+                    Object value = Reflect.invoke(upper, getInt);
+                    if (value instanceof Number) {
+                        upperLimit = ((Number) value).intValue();
+                    }
+                }
+                if (attempts != null) {
+                    Object value = Reflect.invoke(attempts, getInt);
+                    if (value instanceof Number) {
+                        spawnAttempts = ((Number) value).intValue();
+                    }
+                }
+            }
+        }
+        LOG.info("[ROGUELIKE] spawn grid every {} chunks, {} attempts per chunk, first air at y={}",
+                spawnFrequency, spawnAttempts, upperLimit);
+        if (spawnFrequency <= 1) {
+            LOG.warn("[ROGUELIKE] spawn frequency unknown; exact origins are disabled");
+        }
     }
 
     private void resolveThemeLookup(Class<?> editorInterface) {
@@ -369,6 +790,7 @@ public class RoguelikeLocator implements IStructureLocator {
         chooseDungeonSetting = Reflect.findMethod(resolverClass, "chooseDungeonSetting",
                 editorInterface, coordClass);
         settingsGetLevels = Reflect.findMethod(settingsClass, "getLevelSettings");
+        settingsGetId = Reflect.findMethod(settingsClass, "getId");
         levelGetTheme = Reflect.findMethod(levelClass, "getTheme");
         themeGetBase = Reflect.findMethod(themesClass, "getThemeBase");
         try {
@@ -384,11 +806,12 @@ public class RoguelikeLocator implements IStructureLocator {
     }
 
     /**
-     * Replays the settings choice for one chunk with a fresh editor. That mirrors generation exactly:
-     * the generator also builds a new editor per chunk, and nothing consumes its random before
-     * {@code chooseDungeonSetting}.
+     * Replays the settings choice for one block position with a fresh editor. That mirrors
+     * generation exactly: the generator also builds a new editor per chunk, and nothing consumes its
+     * random before {@code chooseDungeonSetting}. Returns {@code {themeName, settingsId}}; either
+     * half may be null when that layer could not be read.
      */
-    private String themeNameAt(World world, int chunkX, int chunkZ) {
+    private String[] resolveAt(World world, int blockX, int blockZ) {
         if (themeLookupBroken || !themeLookupResolved || worldEditorClass == null) {
             return null;
         }
@@ -406,7 +829,7 @@ public class RoguelikeLocator implements IStructureLocator {
                 themeDiag("editor creation failed");
                 return null;
             }
-            Object coord = coordConstructor.newInstance((chunkX << 4) + 8, 64, (chunkZ << 4) + 8);
+            Object coord = coordConstructor.newInstance(blockX, 64, blockZ);
             Object chosen = chooseDungeonSetting.invoke(resolver, editor, coord);
             if (!(chosen instanceof java.util.Optional)) {
                 themeDiag("chooseDungeonSetting returned " + (chosen == null ? "null" : chosen.getClass().getName()));
@@ -414,7 +837,7 @@ public class RoguelikeLocator implements IStructureLocator {
             }
             java.util.Optional<?> optional = (java.util.Optional<?>) chosen;
             if (!optional.isPresent()) {
-                themeDiag("no settings for chunk " + chunkX + "," + chunkZ);
+                themeDiag("no settings at " + blockX + "," + blockZ);
                 return null;
             }
             Object settings = optional.get();
@@ -424,12 +847,12 @@ public class RoguelikeLocator implements IStructureLocator {
                 return null;
             }
             Object firstLevel = ((java.util.Map<?, ?>) levels).values().iterator().next();
-            Object theme = levelGetTheme.invoke(firstLevel);
-            String name = themeNameOf(theme);
-            if (name == null) {
-                themeDiag("unmatched theme " + theme + " (settings " + settings + ")");
+            String theme = themeNameOf(levelGetTheme.invoke(firstLevel));
+            String id = settingsGetId == null ? null : String.valueOf(Reflect.invoke(settings, settingsGetId));
+            if (theme == null) {
+                themeDiag("unmatched theme " + describeTheme(levelGetTheme.invoke(firstLevel)));
             }
-            return name;
+            return new String[]{theme, id};
         } catch (Throwable t) {
             themeLookupBroken = true;
             Throwable cause = t.getCause() == null ? t : t.getCause();
@@ -444,6 +867,24 @@ public class RoguelikeLocator implements IStructureLocator {
         }
         themeDiagLogged = true;
         LOG.info("[ROGUELIKE] theme replay: {}", message);
+    }
+
+    /**
+     * Short label for a theme the enum does not know: the distinct block names it is built from.
+     * The full {@code Theme.toString()} is over 1 KB and buries everything else in the log.
+     */
+    private static String describeTheme(Object theme) {
+        if (theme == null) {
+            return "null";
+        }
+        String text = String.valueOf(theme);
+        Set<String> blocks = new LinkedHashSet<String>();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("\"name\":\"([^\"]+)\"").matcher(text);
+        while (matcher.find() && blocks.size() < 6) {
+            blocks.add(matcher.group(1));
+        }
+        return blocks.isEmpty() ? text.substring(0, Math.min(80, text.length())) : blocks.toString();
     }
 
     /**

@@ -103,6 +103,27 @@ public class StructureSearchEntry {
      * the display name or the full id. Variant rows also match their parent's name and id, so
      * filtering by "doomlike" keeps the children visible under the parent.
      */
+    /**
+     * True when a child variant matches {@code filter}. Parents are otherwise filtered on their own
+     * name only, which would hide "Ice Dungeon" completely: the needle is in the child, not the parent.
+     */
+    public boolean hasMatchingVariant(String filter) {
+        if (variants.isEmpty() || filter == null) {
+            return false;
+        }
+        String needle = filter.trim().toLowerCase(Locale.ROOT);
+        if (needle.isEmpty() || needle.startsWith("@")) {
+            return false;
+        }
+        for (StructureVariant variant : variants) {
+            if (variant.getDisplayName().toLowerCase(Locale.ROOT).contains(needle)
+                    || variant.getVariantId().toLowerCase(Locale.ROOT).contains(needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean matches(String filter) {
         if (filter == null) {
             return true;
