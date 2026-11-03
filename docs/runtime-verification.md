@@ -113,6 +113,20 @@ SKIP search reason=requires single-player integrated server
    - 切 `en_us` / `zh_cn` 各看一遍 GUI 与 HUD。
    - 正常：无 `gui.rlcompass.*` 原始键名、无截断；异常：显示 key、文字溢出按钮。
 
+7. **Roguelike 原点（2026-11-02 修复）**
+   - `/rlcompass find roguelike:dungeon`，把返回的 `(x, y, z)` 原样 `/tp` 过去。
+   - 正常：落点能看到地牢入口塔，而不是空地或海面（旧实现返回 chunk 中心，最多可偏 408 格，且可能对应根本没生成的 chunk）。
+   - 变种 `Ocean Temple Dungeon`：应命中真实建在沙滩（`OCEAN`/`BEACH`）上的那座；纯海洋候选会被地形校验否决并跳过。
+   - 返回"范围内没有找到"属正确结果：日志会打 `[ROGUELIKE] N candidate chunks had no valid spawn origin`。
+   - 异常：日志出现 `selectLocation threw` → 反射失效，已自动退回旧行为（chunk 中心）。
+
+8. **战斗高塔 region 扫描（2026-11-02 新增）**
+   - 进入世界约 2 秒后，日志应出现 `[BT] region scan found N towers under ...`（后台线程，主线程不卡）。
+   - `/rlcompass find rlcompass:battletower`：本存档应命中 `(4854, 64, 5850)` 一带的塔，`source` 为 `BattleTowersScan`。
+   - 打开指南针 GUI：`Battle Tower` 行应重新出现（不再是 `is not available in this world`）。
+   - 已知限制：只扫主世界；只认已保存的 chunk；塔心取方块平均，误差 1–2 格。
+
+
 ## 6. 已知限制（为什么有些不能半自动）
 
 - **GL 上下文**：箭头是 `GL11.glBegin` 直接画的三角形；GUI 背景/滚动条/裁剪用 `GlStateManager` + `glScissor`。没有真实 GL 上下文就无法执行，更无法断言像素。
