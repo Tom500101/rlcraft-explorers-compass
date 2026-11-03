@@ -120,6 +120,21 @@ gradlew build -Dorg.gradle.java.home=/path/to/jdk-25
 
 首次构建需要下载并反编译 Minecraft / Forge（反编译一步实测约 2.5 分钟），属正常现象。
 
+### 构建后自动部署
+
+`build` 结束时会自动跑 `deployToRlcraft`：把 `build/libs/rlcraft-explorers-compass.jar`（reobf 后的产物，
+不是 `-dev`）复制到整合包的 `mods/`，并先替换掉同名的旧 jar。
+
+```
+rlcraft_mods_dir = C:/Users/<you>/AppData/Roaming/.minecraft/versions/RLCraft/mods
+```
+
+- 路径写在 `gradle.properties` 的 `rlcraft_mods_dir`，换机器改这一行即可；未设置或目录不存在时任务只打日志、不报错。
+- 旧 jar 会先备份到 `build/deploy-backup/<时间戳>/`，只保留最近 10 份；需要回滚时直接拷回去。
+- 目标 jar 与产物字节一致时跳过（不会每次都重写 mods 目录）。
+- **游戏运行中 jar 被占用**：任务打一条警告并中止本次部署，不会让构建失败；关掉游戏后 `gradlew deployToRlcraft` 重试。
+- 只动名字以本模组 jar 名开头的文件，`mods/` 里其他 200 多个 jar 不会被读取或删除。
+
 ### 本地模组依赖
 
 RLCraft 的结构模组 jar 放在项目根目录的 `libs/` 下，`build.gradle.kts` 会自动加载并反混淆：

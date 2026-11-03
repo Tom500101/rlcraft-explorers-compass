@@ -1,3 +1,7 @@
+import java.io.File
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
 import org.jetbrains.gradle.ext.Gradle
 import org.jetbrains.gradle.ext.compiler
 import org.jetbrains.gradle.ext.runConfigurations
@@ -335,4 +339,105 @@ tasks.register("bootstrapCompassTextures") {
         )
         println("compass frames + models generated")
     }
+}
+
+/**
+ * Deploys the reobfuscated jar into the RLCraft mods folder right after a successful build.
+ *
+ * The previous build of this mod is backed up to `build/deploy-backup/<timestamp>/` before it is
+ * replaced, so a bad build can be rolled back without rebuilding anything. Only jars that share
+ * this build's jar name are touched; nothing else in the mods folder is read or removed.
+ *
+ * A locked jar (Minecraft still running) is reported as a warning instead of failing the build —
+ * the deploy is a convenience, not part of the compile contract. Run `gradlew deployToRlcraft`
+ * manually after closing the game to retry.
+ */
+val rlcraftModsDir = (findProperty("rlcraft_mods_dir") as String?)?.trim().orEmpty()
+// The reobfuscated jar (build/libs/<project>.jar), NOT the -dev jar: the dev jar keeps MCP names and
+// would blow up in a production client with NoSuchMethodError. reobfJar rewrites this file in place.
+val deploySourceJar = layout.buildDirectory.file("libs/${project.name}.jar")
+
+private fun sha256(file: File): String =
+    MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+        .joinToString("") { "%02x".format(it) }
+
+tasks.register("deployToRlcraft") {
+    group = "build"
+    description = "Replaces the mod jar in the RLCraft mods folder with the current build."
+    doLast {
+        if (rlcraftModsDir.isEmpty()) {
+            logger.lifecycle("[deploy] skipped: rlcraft_mods_dir is not set in gradle.properties")
+            return@doLast
+        }
+        val modsDir = file(rlcraftModsDir)
+        var source = deploySourceJar.get().asFile
+        if (!source.isFile) {
+            // Fallback for a renamed project dir: newest jar that is neither -dev nor -sources.
+            source = layout.buildDirectory.dir("libs").get().asFile.listFiles { f ->
+                f.isFile && f.name.endsWith(".jar")
+                    && !f.name.endsWith("-dev.jar") && !f.name.endsWith("-sources.jar")
+            }?.maxByOrNull { it.lastModified() } ?: source
+        }
+        if (!source.isFile) {
+            logger.warn("[deploy] skipped: no reobfuscated jar under build/libs")
+            return@doLast
+        }
+        if (!modsDir.isDirectory) {
+            logger.warn("[deploy] skipped: $modsDir is not a directory")
+            return@doLast
+        }
+
+        // Nothing to do when the pack already holds this exact jar: every build runs this task, and
+        // re-copying an unchanged file would churn the mods folder and pile up backups.
+        val installed = File(modsDir, source.name)
+        if (installed.isFile && installed.length() == source.length()
+            && sha256(installed) == sha256(source)
+        ) {
+            logger.lifecycle("[deploy] up to date: ${source.name}")
+            return@doLast
+        }
+
+        val baseName = source.nameWithoutExtension
+        val previous = modsDir.listFiles { f ->
+            f.isFile && f.name.startsWith(baseName) && f.name.endsWith(".jar")
+        }?.sortedBy { it.name }.orEmpty()
+
+        val backupDir = layout.buildDirectory
+            .dir("deploy-backup/${SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())}")
+            .get().asFile
+        var replaced = 0
+        for (old in previous) {
+            try {
+                backupDir.mkdirs()
+                old.copyTo(File(backupDir, old.name), overwrite = true)
+                if (!old.delete()) {
+                    logger.warn("[deploy] cannot delete ${old.name} (Minecraft running?) — deploy aborted")
+                    return@doLast
+                }
+                replaced++
+            } catch (e: Exception) {
+                logger.warn("[deploy] failed to replace ${old.name}: ${e.message} — deploy aborted")
+                return@doLast
+            }
+        }
+
+        try {
+            source.copyTo(installed, overwrite = true)
+            logger.lifecycle("[deploy] ${source.name} -> $modsDir (replaced $replaced, backup $backupDir)")
+        } catch (e: Exception) {
+            logger.warn("[deploy] copy failed: ${e.message} — is Minecraft running?")
+        }
+
+        // Keep the last ten backups; older ones are just build artefacts under build/.
+        layout.buildDirectory.dir("deploy-backup").get().asFile
+            .listFiles { f -> f.isDirectory }
+            ?.sortedByDescending { it.name }
+            ?.drop(10)
+            ?.forEach { it.deleteRecursively() }
+    }
+}
+
+// Runs only after reobf succeeded, so a failed compile never pushes a stale jar into the pack.
+tasks.named("reobfJar") {
+    finalizedBy("deployToRlcraft")
 }
