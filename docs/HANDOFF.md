@@ -190,3 +190,21 @@
   `minecraft:village/plains|desert|savanna|taiga|snowy`。命中一律标 `variantConfirmed=true`。
 - **成本**：半径 10000 时约 1200 个候选，每个一次 `canSpawnStructureAtCoords`（哈希 + biome 查询），
   实测个位数毫秒。
+
+## 7. Recurrent Complex：按结构 ID 精确检索（2026-11-03）
+
+- **数据结构**：`WorldStructureGenerationData` 是**按维度**的 `WorldSavedData`
+  （`saves/<世界>/data/reccomplex-structuredata.dat`，下界在 `DIM-1/data/` 同名文件），
+  条目字段：`structureID`、`boundingBox`、`blocking`、`firstTime`、`seed`、`rotation`。
+  → `entry.getStructureID()` 就是生成时用的结构名，按它过滤是**精确**的，不需要任何重放。
+- **变体来源**：结构 id 列表来自两侧——`<gameDir>/structures/active/**.rcst`（RLCraft 自带 202 个）
+  与 mod jar 内 `assets/reccomplex/structures/active/**.rcst`（RC 内置 187 个），
+  合并去重后 386 个。`.rcig` 不参与：`structures/active` 里的 73 个全是 `inventoryGeneratorID`（战利品表），
+  不会生成到世界上。
+- **为什么走文件而不是 API**：变体列表在**客户端**取（`GuiStructureSelect` 传 `mc.world`），
+  而 RC 的结构注册表 `StructureRegistry.INSTANCE` 只在服务端加载；客户端调
+  `WorldStructureGenerationData.get(WorldClient)` 也拿不到存档数据。文件扫描两侧都能跑。
+- **匹配**：`structureID` 可能是裸文件名，也可能是包内相对路径，故同时接受「全等」与「路径后缀」两种形态。
+- **限制**：只有**已生成**的结构能被找到（RC 的定位就是查这张表）。未生成的返回「没找到」，
+  这是正确结果，不是 bug。多人游戏下客户端读的是本地结构包，若服务端包不同步，变体列表可能对不上。
+- **已知规模**：386 个子项，靠 GUI 筛选框检索（例如输 `Ship` → `P_LargeShip`）。
