@@ -178,6 +178,8 @@ public class BattleTowersLocator implements IStructureLocator {
     @Override
     public List<StructureVariant> getVariants(World world) {
         List<StructureVariant> out = new ArrayList<StructureVariant>();
+        out.add(new StructureVariant(STRUCTURE_ID + "/mega", STRUCTURE_ID,
+                "Mega Battle Tower", StructureVariant.VariantSource.RUNTIME_API));
         out.add(new StructureVariant(STRUCTURE_ID + "/cobblestone", STRUCTURE_ID,
                 "Cobblestone Tower", StructureVariant.VariantSource.RUNTIME_API));
         out.add(new StructureVariant(STRUCTURE_ID + "/cobblestonemossy", STRUCTURE_ID,

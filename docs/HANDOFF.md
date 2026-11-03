@@ -133,7 +133,12 @@
   - 地狱岩类：`netherrack ≥ 500 && soul_sand ≥ 300`。只数 netherrack 不可行——自然岩浆区一个 chunk 就有 2783 块；
     加上 soul sand 门槛后，同存档的自然地形最高 149、地下残段 166，只有真塔（866）能过；
   - 去重从 24 格收到 16 格，且**不同材质不合并**：相邻的两座不同类型塔此前会被并成一座。
-- **变体**：新增 `Cobblestone Tower` / `Mossy Cobblestone Tower` / `Netherrack Tower`，变体搜索只认扫描结果（worldMap 与 positions 文件没有类型，不能硬猜）。
+- **变体**：新增 `Mega Battle Tower` / `Cobblestone Tower` / `Mossy Cobblestone Tower` / `Netherrack Tower`，变体搜索只认扫描结果（worldMap 与 positions 文件没有类型，不能硬猜）。
+- **Mega（2026-11-03 补）**：Mega 是 3–4 座塔拼成的复合体，内部被黑曜石包裹。
+  存档实证：`(2278–2326, 5012–5060)`、y 69–125、跨 10 个 chunk、黑曜石合计约 11,000 块（单 chunk 644–1689）。
+  判定 `obsidian ≥ 500` 且优先于其他材质；同存档自然黑曜石单 chunk 最高 213，不会误报。
+  两个配套修正：命中点改用 **chunk 中心**（原先用方块重心，48×48 的 Mega 重心在相邻 chunk 间漂移，
+  会把一座拆成四座）；合并半径按类型区分（Mega 64 格，其余 16 格）。
 - **暂未启用**：SandStone / Ice / Jungle / SmoothStone 四种。砂岩与冰在自己的生物群系里自然成片，直接按数量判定会大量误报，需要先做塔形校验（四角柱 + 中空）。
 - **全存档复扫**（64 region）：9 座，其中 cobblestone 4 座、cobblestonemossy 4 座、netherrack 1 座（`(2247, 5063)`，旁边 70 格即 `(2311, 5031)` 的纯圆石高塔）。
 

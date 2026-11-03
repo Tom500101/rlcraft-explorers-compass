@@ -60,6 +60,7 @@ public final class BattleTowersRegionScanner {
     private static final int BLOCK_PACKED_ICE = 174;
     private static final int BLOCK_NETHERRACK = 87;
     private static final int BLOCK_SOUL_SAND = 88;
+    private static final int BLOCK_OBSIDIAN = 49;
 
     /**
      * Per-material floors. Cobblestone excludes village smithies (286-404 blocks); a real tower has
@@ -77,6 +78,12 @@ public final class BattleTowersRegionScanner {
      */
     private static final int MIN_NETHERRACK = 500;
     private static final int MIN_SOUL_SAND = 300;
+    /**
+     * A Mega tower is 3-4 towers fused into a 48x48 compound whose interior is wrapped in obsidian;
+     * a sampled one held ~11,000 obsidian across ten chunks (644-1689 each). Natural obsidian in
+     * the same save peaked at 213 per chunk, so 500 separates cleanly.
+     */
+    private static final int MIN_OBSIDIAN = 500;
     /**
      * Same-type hits closer than this are one tower (a tower spans 1-4 chunks, centres within ~8
      * blocks). Different types are never merged: two towers of different materials can stand next
@@ -297,10 +304,11 @@ public final class BattleTowersRegionScanner {
                     }
                     int chunkX = regionX * 32 + x;
                     int chunkZ = regionZ * 32 + z;
+                    // Chunk centre, not the block centroid: the centroid of a 48x48 Mega drifts
+                    // more than the merge radius between neighbouring chunks, which used to split
+                    // one compound into four hits.
                     out.add(new TowerHit(
-                            new BlockPos(chunkX * 16 + stats.centerX(), 64,
-                                    chunkZ * 16 + stats.centerZ()),
-                            type));
+                            new BlockPos(chunkX * 16 + 8, 64, chunkZ * 16 + 8), type));
                 }
             }
         } catch (Throwable t) {
@@ -361,24 +369,44 @@ public final class BattleTowersRegionScanner {
                 | (data[offset + 3] & 0xFF);
     }
 
-    /** Collapses the 1-4 chunks a single tower spans, but never merges different materials. */
+    /**
+     * Collapses the chunks one structure spans, but never merges different materials. The position
+     * is averaged as hits accumulate: a Mega tower covers ~10 chunks, so keeping the first hit
+     * would report a corner instead of the middle.
+     */
     private static List<TowerHit> merge(List<TowerHit> raw) {
         List<TowerHit> out = new ArrayList<TowerHit>();
+        List<int[]> sums = new ArrayList<int[]>();
         for (TowerHit hit : raw) {
-            boolean duplicate = false;
-            for (TowerHit kept : out) {
+            int match = -1;
+            for (int i = 0; i < out.size(); i++) {
+                TowerHit kept = out.get(i);
+                int radius = mergeRadius(kept.type);
                 if (kept.type.equals(hit.type)
-                        && Math.abs(kept.pos.getX() - hit.pos.getX()) <= MERGE_DISTANCE
-                        && Math.abs(kept.pos.getZ() - hit.pos.getZ()) <= MERGE_DISTANCE) {
-                    duplicate = true;
+                        && Math.abs(kept.pos.getX() - hit.pos.getX()) <= radius
+                        && Math.abs(kept.pos.getZ() - hit.pos.getZ()) <= radius) {
+                    match = i;
                     break;
                 }
             }
-            if (!duplicate) {
+            if (match < 0) {
                 out.add(hit);
+                sums.add(new int[]{hit.pos.getX(), hit.pos.getZ(), 1});
+            } else {
+                int[] acc = sums.get(match);
+                acc[0] += hit.pos.getX();
+                acc[1] += hit.pos.getZ();
+                acc[2]++;
+                out.set(match, new TowerHit(
+                        new BlockPos(acc[0] / acc[2], 64, acc[1] / acc[2]), hit.type));
             }
         }
         return out;
+    }
+
+    /** A Mega compound spans 4x4 chunks (~48 blocks) and needs a wider merge radius. */
+    private static int mergeRadius(String type) {
+        return "mega".equals(type) ? 64 : MERGE_DISTANCE;
     }
 
     private static final class Stats {
@@ -386,6 +414,7 @@ public final class BattleTowersRegionScanner {
         int mossy;
         int netherrack;
         int soulSand;
+        int obsidian;
         int sandstone;
         int ice;
         long sumX;
@@ -406,6 +435,9 @@ public final class BattleTowersRegionScanner {
                     break;
                 case BLOCK_SOUL_SAND:
                     soulSand++;
+                    break;
+                case BLOCK_OBSIDIAN:
+                    obsidian++;
                     break;
                 case BLOCK_SANDSTONE:
                     sandstone++;
@@ -431,6 +463,9 @@ public final class BattleTowersRegionScanner {
          * biomes, so they need a shape check first.
          */
         String detectType() {
+            if (obsidian >= MIN_OBSIDIAN) {
+                return "mega";
+            }
             if (netherrack >= MIN_NETHERRACK && soulSand >= MIN_SOUL_SAND) {
                 return "netherrack";
             }
