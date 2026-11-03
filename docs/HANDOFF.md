@@ -262,6 +262,8 @@
 > 参考实现：`https://github.com/MattCzyr/ExplorersCompass`（对照过 `forge-1.16.5` 与 `main` 的 `gui/`、
 > `util/RenderUtils`）。下方是最终确认的视觉规格；实现是本项目自己的 1.12.2 代码（`GuiScreen` +
 > `GuiSlot` + `drawRect`），不复制上游类。
+> 上游 `LICENSE.md` 是 **CC BY-NC-SA 4.0**——上一轮说「仓库里没有 LICENSE」是错的（当时只看了
+> 文件树顶层，漏了 `LICENSE.md`）。贴图沿用 `NOTICE` 里已有的署名与同协议，代码只借鉴数值、不搬实现。
 
 ### 8.1 规格（提取值）
 
@@ -303,11 +305,15 @@
 ## 9. 待办
 
 1. **`UltraRarePredictor` 的 vanilla 锚点还没接枚举器**（`locate/impl/UltraRarePredictor.java` 类注释的 tier 2）。
-   目前 `hasVanillaAnchor` 只能判断「这个结构声明了 vanilla 生成信息」，候选仍然全部退回生物群系层，
-   给的是「有资格」而不是「原版结构所在位置」。
-   下一步：把 §6 的 `MapGenLocator.enumerateCandidates` 接进来，按 `vanilla` 段的结构类型映射
-   （stronghold / village / temple / monument / mansion / mineshaft）复用对应 salt 与 spacing，
-   命中点直接作为候选，来源标 `vanilla anchor`。
+   目前 `hasVanillaAnchor` 能判断「声明了 vanilla 生成信息」，但**没有任何调用方**，候选仍退回生物群系层。
+   **2026-11-03 实测规模**（`.rcst` 是 zip，必须解压读 `structure.json`，直接 grep 二进制会得到 0）：
+   共 **30 条**（jar 内置 15 + 整合包 15），全部是 `Village*` 部件（Chandlery / Glassworks / Kitchen /
+   Library / Stonemason / Tannery / Church / ForgeLarge / GuardTower / Inn…），字段为
+   `generationInfos[].type="vanilla"` + `id=vanilla_<hash>` + `generationWeight` +
+   `min/maxBaseLimit` + `min/maxScaledLimit` + `spawnShiftX/Y/Z` + `biomeExpression`，
+   `spawnShiftY` 多为 -2/-3 → 这类结构落在**原版村庄**的位置上。
+   下一步：先解 RC 的 `VanillaGeneration` 拿到 `vanilla_<hash>` → 原版生成器的映射（不能按结构名猜），
+   再用 `VillageLocator` 的候选枚举 + 该条目的 `biomeExpression` 过滤，命中标 `vanilla anchor (suggested)`。
 2. **BattleTowers 的预测公式已回滚**：上一轮按 `BattletowerPositionsFile` 的网格公式预测塔位，
    实机核对发现与真实塔位的**奇偶**不符（预测点与实测塔成对错位），代码已撤，
    当前只剩 region 扫描（§4）这条记录型路径。
