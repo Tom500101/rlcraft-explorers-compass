@@ -42,6 +42,19 @@ public final class GuiTheme {
     public static final int TEXT_HINT = 0xFF808080;
     public static final int TEXT_DISABLED = 0xFF808080;
 
+    /** Popup menus need to sit above rows, so they get their own near-opaque surface. */
+    public static final int MENU_BACKGROUND = 0xE6000000;
+    public static final int MENU_HOVER = 0x33FFFFFF;
+    public static final int MENU_BORDER = 0x40FFFFFF;
+
     private GuiTheme() {
+    }
+
+    /** 1px outline on all four sides, used by the popup menus. */
+    public static void outline(int left, int top, int right, int bottom, int color) {
+        net.minecraft.client.gui.Gui.drawRect(left, top, right, top + 1, color);
+        net.minecraft.client.gui.Gui.drawRect(left, bottom - 1, right, bottom, color);
+        net.minecraft.client.gui.Gui.drawRect(left, top, left + 1, bottom, color);
+        net.minecraft.client.gui.Gui.drawRect(right - 1, top, right, bottom, color);
     }
 }

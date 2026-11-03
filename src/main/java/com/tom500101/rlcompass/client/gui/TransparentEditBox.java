@@ -16,8 +16,9 @@ import net.minecraft.client.gui.GuiTextField;
  */
 public class TransparentEditBox extends GuiTextField {
 
-    private static final int PADDING_X = 8;
-    private static final int PADDING_Y = 6;
+    // The reference field is exactly its widget bounds; no extra chrome around it.
+    private static final int PADDING_X = 0;
+    private static final int PADDING_Y = 0;
 
     public TransparentEditBox(int id, FontRenderer fontRenderer, int x, int y, int width, int height) {
         super(id, fontRenderer, x, y, width, height);

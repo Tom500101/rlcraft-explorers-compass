@@ -1,10 +1,7 @@
 item.rlcompass.explorers_compass.name=Explorer's Compass
 
 gui.rlcompass.title=Explorer's Compass
-gui.rlcompass.subtitle=Locate structures near you
-gui.rlcompass.hint=Type to filter | @mod filters by source
 gui.rlcompass.filter=Filter Results
-gui.rlcompass.count=Showing %s of %s structures
 gui.rlcompass.empty=No structures are available
 gui.rlcompass.noMatch=Nothing matches the filter
 gui.rlcompass.search=Search
@@ -21,7 +18,7 @@ rlcompass.search.notFound=No %s found within the search radius
 rlcompass.hud.searching=Searching
 
 # suggestion warehouse: everything the compass has offered so far
-gui.rlcompass.warehouse=Suggestion warehouse
+gui.rlcompass.warehouse=Warehouse
 gui.rlcompass.warehouse.title=Suggestion warehouse
 gui.rlcompass.warehouse.empty=Nothing searched yet
 gui.rlcompass.warehouse.searchAgain=Search again

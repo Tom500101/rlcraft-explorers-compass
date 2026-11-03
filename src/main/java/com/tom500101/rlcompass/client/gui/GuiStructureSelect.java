@@ -40,9 +40,16 @@ public class GuiStructureSelect extends GuiScreen {
     private static final int SORT_BUTTON_ID = 1;
     private static final int CANCEL_BUTTON_ID = 2;
 
-    private static final int RESULTS_HEADER_HEIGHT = 20;
+    // Reference geometry: a 110px action column on the left, the list column starting at x=130,
+    // 10px screen edges, 20px controls. Fixed pixels on purpose — the reference does not reflow.
+    private static final int LEFT_X = 10;
+    private static final int LEFT_WIDTH = 110;
+    private static final int LIST_LEFT = 130;
+    private static final int LIST_TOP = 40;
+    private static final int EDGE = 10;
+    private static final int BUTTON_HEIGHT = 20;
+    private static final int SEARCH_BOX_WIDTH = 150;
     private static final int SLOT_HEIGHT = 50;
-    private static final int PANEL_GAP = 14;
 
     private final List<StructureSearchEntry> allEntries = new ArrayList<StructureSearchEntry>();
     private final List<String> baseIds = new ArrayList<String>();
@@ -79,18 +86,21 @@ public class GuiStructureSelect extends GuiScreen {
     public void initGui() {
         buttonList.clear();
 
-        searchButton = new TransparentButton(SEARCH_BUTTON_ID, 0, 0, 180, 20,
-                I18n.format("gui.rlcompass.search"));
-        sortButton = new TransparentButton(SORT_BUTTON_ID, 0, 0, 80, 18, sortMode.label());
-        cancelButton = new TransparentButton(CANCEL_BUTTON_ID, 0, 0, 80, 18, I18n.format("gui.cancel"));
-        warehouseButton = new TransparentButton(WAREHOUSE_BUTTON_ID, 0, 0, 180, 18,
-                I18n.format("gui.rlcompass.warehouse"));
+        searchButton = new TransparentButton(SEARCH_BUTTON_ID, LEFT_X, 40, LEFT_WIDTH,
+                BUTTON_HEIGHT, I18n.format("gui.rlcompass.search"));
+        sortButton = new TransparentButton(SORT_BUTTON_ID, LEFT_X, 65, LEFT_WIDTH,
+                BUTTON_HEIGHT, sortMode.label());
+        cancelButton = new TransparentButton(CANCEL_BUTTON_ID, LEFT_X, height - 30, LEFT_WIDTH,
+                BUTTON_HEIGHT, I18n.format("gui.cancel"));
+        warehouseButton = new TransparentButton(WAREHOUSE_BUTTON_ID, LEFT_X, 90, LEFT_WIDTH,
+                BUTTON_HEIGHT, I18n.format("gui.rlcompass.warehouse"));
         buttonList.add(searchButton);
         buttonList.add(warehouseButton);
         buttonList.add(sortButton);
         buttonList.add(cancelButton);
 
-        searchBox = new TransparentEditBox(0, fontRenderer, 0, 0, 180, 12);
+        searchBox = new TransparentEditBox(0, fontRenderer, LIST_LEFT, 10, SEARCH_BOX_WIDTH,
+                BUTTON_HEIGHT);
         searchBox.setEnableBackgroundDrawing(false);
         searchBox.setCanLoseFocus(false);
         searchBox.setFocused(true);
@@ -167,45 +177,28 @@ public class GuiStructureSelect extends GuiScreen {
 
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
-        int margin = getRootMargin();
-        int headerTop = getHeaderTop();
-        int sidePanelLeft = getSidePanelLeft();
-        int listLeft = getListLeft();
-        int listTop = getListTop();
-
-        // Vanilla in-world backdrop (the same dark gradient the reference screen renders first);
-        // the list paints its own translucent surface on top of it.
+        // Reference geometry: title centred over the action column, search box at the head of the
+        // list column, list filling the rest of the screen. Nothing else is drawn on the sheet.
         drawDefaultBackground();
 
         selectionList.drawScreen(mouseX, mouseY, partialTicks);
 
-        fontRenderer.drawStringWithShadow(I18n.format("gui.rlcompass.title"), margin + 12,
-                headerTop + 12, GuiTheme.TEXT);
-        fontRenderer.drawString(I18n.format("gui.rlcompass.subtitle"), margin + 12, headerTop + 26,
-                GuiTheme.TEXT_INFO);
+        drawCenteredString(fontRenderer, I18n.format("gui.rlcompass.title"),
+                LEFT_X + LEFT_WIDTH / 2, 15, GuiTheme.TEXT);
 
-        fontRenderer.drawString(
-                I18n.format("gui.rlcompass.count", selectionList.getEntryCount(), allEntries.size()),
-                listLeft + 16, listTop + 4, GuiTheme.TEXT_INFO);
-
-        // The @mod filter syntax does not fit in the header next to the box, so it lives under the
-        // action column. Wrapped so it cannot spill over the list on a narrow window.
-        fontRenderer.drawSplitString(I18n.format("gui.rlcompass.hint"), sidePanelLeft + 12,
-                listTop + 114, getSidePanelWidth() - 24, GuiTheme.TEXT_HINT);
-
-        if (allEntries.isEmpty()) {
-            fontRenderer.drawString(I18n.format("gui.rlcompass.empty"), listLeft + 16,
-                    listTop + RESULTS_HEADER_HEIGHT + 16, GuiTheme.TEXT_INFO);
-        } else if (selectionList.getEntryCount() == 0) {
-            fontRenderer.drawString(I18n.format("gui.rlcompass.noMatch"), listLeft + 16,
-                    listTop + RESULTS_HEADER_HEIGHT + 16, GuiTheme.TEXT_INFO);
+        if (allEntries.isEmpty() || selectionList.getEntryCount() == 0) {
+            String message = allEntries.isEmpty()
+                    ? I18n.format("gui.rlcompass.empty")
+                    : I18n.format("gui.rlcompass.noMatch");
+            drawCenteredString(fontRenderer, message,
+                    LIST_LEFT + (width - EDGE - LIST_LEFT) / 2, LIST_TOP + 30, GuiTheme.TEXT_INFO);
         }
 
         searchBox.drawTextBox();
         if (searchBox.getText().isEmpty()) {
-            // Placeholder: the box has no room for a label above it at minimum header height.
-            fontRenderer.drawString(I18n.format("gui.rlcompass.filter"), searchBox.x + 1,
-                    searchBox.y + 2, GuiTheme.TEXT_HINT);
+            // Placeholder sits inside the field, mirroring the reference's hint text.
+            fontRenderer.drawString(I18n.format("gui.rlcompass.filter"), searchBox.x + 4,
+                    searchBox.y + 6, GuiTheme.TEXT_HINT);
         }
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
@@ -423,79 +416,32 @@ public class GuiStructureSelect extends GuiScreen {
     }
 
     private void layoutControls() {
-        int sidePanelLeft = getSidePanelLeft();
-        int listTop = getListTop();
-        int buttonWidth = getSidePanelWidth() - 28;
-        int x = sidePanelLeft + PANEL_GAP;
+        searchButton.x = LEFT_X;
+        searchButton.y = 40;
+        searchButton.width = LEFT_WIDTH;
+        searchButton.height = BUTTON_HEIGHT;
 
-        int y = listTop + 36;
-        searchButton.x = x;
-        searchButton.y = y;
-        searchButton.width = buttonWidth;
-        searchButton.height = 20;
+        sortButton.x = LEFT_X;
+        sortButton.y = 65;
+        sortButton.width = LEFT_WIDTH;
+        sortButton.height = BUTTON_HEIGHT;
 
-        y += 27;
-        int utilityWidth = (buttonWidth - 8) / 2;
-        sortButton.x = x;
-        sortButton.y = y;
-        sortButton.width = utilityWidth;
-        sortButton.height = 18;
-        cancelButton.x = x + utilityWidth + 8;
-        cancelButton.y = y;
-        cancelButton.width = utilityWidth;
-        cancelButton.height = 18;
+        warehouseButton.x = LEFT_X;
+        warehouseButton.y = 90;
+        warehouseButton.width = LEFT_WIDTH;
+        warehouseButton.height = BUTTON_HEIGHT;
 
-        y += 25;
-        warehouseButton.x = x;
-        warehouseButton.y = y;
-        warehouseButton.width = buttonWidth;
-        warehouseButton.height = 18;
+        cancelButton.x = LEFT_X;
+        cancelButton.y = height - 30;
+        cancelButton.width = LEFT_WIDTH;
+        cancelButton.height = BUTTON_HEIGHT;
 
-        int filterWidth = Math.max(150, Math.min(260, width / 4));
-        searchBox.width = filterWidth - 16;
-        searchBox.height = 12;
-        searchBox.x = width - getRootMargin() - 12 - filterWidth + 8;
-        // Visual box spans y-6 .. y+18, so +44 keeps the bottom inside the shortest header (74).
-        searchBox.y = getHeaderTop() + 44;
+        searchBox.x = LIST_LEFT;
+        searchBox.y = 10;
+        searchBox.width = SEARCH_BOX_WIDTH;
+        searchBox.height = BUTTON_HEIGHT;
 
-        selectionList.updateBounds(getListLeft(), getListRight(),
-                getListTop() + RESULTS_HEADER_HEIGHT + 10, getPanelBottom() - 10);
-    }
-
-    private int getRootMargin() {
-        return Math.max(10, Math.min(18, width / 80));
-    }
-
-    private int getHeaderTop() {
-        return getRootMargin();
-    }
-
-    private int getHeaderHeight() {
-        return Math.max(74, Math.min(88, height / 6));
-    }
-
-    private int getSidePanelLeft() {
-        return getRootMargin();
-    }
-
-    private int getSidePanelWidth() {
-        return Math.max(190, Math.min(220, width / 4));
-    }
-
-    private int getListLeft() {
-        return getSidePanelLeft() + getSidePanelWidth() + PANEL_GAP;
-    }
-
-    private int getListRight() {
-        return width - getRootMargin();
-    }
-
-    private int getListTop() {
-        return getHeaderTop() + getHeaderHeight() + PANEL_GAP;
-    }
-
-    private int getPanelBottom() {
-        return height - getRootMargin();
+        selectionList.updateBounds(LIST_LEFT, width - EDGE, LIST_TOP, height - EDGE);
     }
 
     /** Sort orders the Sort button cycles through. */

@@ -1,10 +1,7 @@
 item.rlcompass.explorers_compass.name=探险者指南针
 
 gui.rlcompass.title=探险者指南针
-gui.rlcompass.subtitle=搜索你附近的结构
-gui.rlcompass.hint=输入即筛选 | @模组名 按来源筛选
 gui.rlcompass.filter=筛选结果
-gui.rlcompass.count=显示 %s 个，共 %s 个结构
 gui.rlcompass.empty=当前没有可搜索的结构
 gui.rlcompass.noMatch=没有符合筛选条件的结构
 gui.rlcompass.search=搜索
@@ -21,7 +18,7 @@ rlcompass.search.notFound=搜索范围内没有找到 %s
 rlcompass.hud.searching=搜索中
 
 # 建议点仓库：指南针给出过的全部候选点
-gui.rlcompass.warehouse=建议点仓库
+gui.rlcompass.warehouse=建议点
 gui.rlcompass.warehouse.title=建议点仓库
 gui.rlcompass.warehouse.empty=还没有搜索记录
 gui.rlcompass.warehouse.searchAgain=再搜一次
