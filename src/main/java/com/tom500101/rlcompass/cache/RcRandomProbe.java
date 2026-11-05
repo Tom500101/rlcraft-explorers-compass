@@ -13,6 +13,8 @@ import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import com.tom500101.rlcompass.config.CompassConfig;
+
 /**
  * Diagnostic probe: dumps the real internal state of the chunk random RC is about to use.
  *
@@ -37,11 +39,15 @@ public final class RcRandomProbe {
 
     /**
      * Diagnostic switch. The probe already served its purpose — it proved the populate random is
-     * {@code x*k + z*l ^ worldSeed} — so it stays silent unless started with
-     * {@code -Drlcompass.probe=true}. Kept in the tree because it is the fastest way to re-verify
-     * the formula after a Forge or RLTweaker update.
+     * {@code x*k + z*l ^ worldSeed} — so it stays silent unless turned on, either through
+     * {@code debugRandomProbe} in {@code config/rlcompass.cfg} (read on every event, so toggling it
+     * in the config GUI takes effect without a restart) or through {@code -Drlcompass.rcprobe=true}
+     * for a run that must not touch the config file. Kept in the tree because it is the fastest way
+     * to re-verify the formula after a Forge or RLTweaker update.
      */
-    private static final boolean ENABLED = Boolean.getBoolean("rlcompass.probe");
+    private static boolean isEnabled() {
+        return CompassConfig.debugRandomProbe || Boolean.getBoolean("rlcompass.rcprobe");
+    }
 
     private static final int LIMIT = 48;
 
@@ -49,7 +55,7 @@ public final class RcRandomProbe {
 
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public void onPopulate(PopulateChunkEvent.Pre event) {
-        if (!ENABLED || logged >= LIMIT) {
+        if (logged >= LIMIT || !isEnabled()) {
             return;
         }
         World world = event.getWorld();

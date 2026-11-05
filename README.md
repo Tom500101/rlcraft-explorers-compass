@@ -15,6 +15,7 @@ RLCraft 专属的探险者指南针模组，面向 Minecraft 1.12.2 Forge。
 | 项目 | 值 |
 | --- | --- |
 | 模组 ID | `rlcompass` |
+| 版本 | `1.1.0`（变更见文末「版本记录」） |
 | 显示名称 | RLcraft Explorer's Compass |
 | 作者 | tom500101 |
 | Minecraft | 1.12.2 |
@@ -309,6 +310,35 @@ Gradle 面板中执行 `Tasks > forgegradle runs > runClient`，
 | `structureBlacklist` | 空 | 按结构 ID 禁用搜索，如 `minecraft:village` |
 | `slowLocatorWarnMs` | `500` | 单个适配器超时多久打告警日志 |
 | `showExactCoordinates` | `true` | HUD 显示精确坐标；关闭后只显示距离与方向 |
+| `debugRandomProbe` | `false` | 调试开关：打印区块随机数状态（48 行，仅主世界），用于复核超稀有结构的重放公式；也可改用 `-Drlcompass.rcprobe=true` |
+
+## 版本记录
+
+倒序排列，最新在上。
+
+### 1.1.0 — 2026-11-05
+
+模组结构与超稀有结构扩展。
+
+- **冰与火龙巢 / 龙穴**：`ModdedStructureRegionScanner` 解析 1.12.2 的 12 位方块 ID
+  （`Blocks` + `Add`），再用宝藏深度区分地面龙巢与地下龙穴。
+- **恐怖生物地牢**：优先反射 `ExtendedWorld.dungeons`，失效时退回 region 扫描。
+- **Shivaxi 天空之城**：确定性重放 + RC 放置试算，未生成区块也能算候选；加入试算后实测 2/2、2/2 全部命中真城。
+- **缓存仓库**：搜索历史可增删改查、三态标记，已记录的点不会重复返回。
+- **维度标注**：主界面每行标出生成维度，维度不符时直接提示「该结构不在当前维度」。
+- **搜索半径滑条**：界面内 100–100000 格可调，松手写回 `config/rlcompass.cfg`。
+- **性能**：群系采样改为 `BiomeProvider.getBiomes` 瓦片批量读取，19,443 chunk/s（约 26 倍）。
+- **稳定性**：RC 类别迭代顺序钉死为确定序，修复跨会话候选漂移。
+- **调试探针**改为配置开关 `debugRandomProbe`，默认关闭，不再刷日志。
+
+### 1.0.0 — 2026-10-30
+
+首个可用版本，阶段 8 验收全部通过。
+
+- 分层定位框架 `IStructureLocator` / `StructureLocatorRegistry`。
+- 适配器：原版 6 类 + Better Mineshafts、Roguelike Dungeons、Doomlike Dungeons、Ruins、
+  Battle Towers、Recurrent Complex。
+- 指南针物品、结构选择界面、HUD、网络通道、生成缓存 `WorldSavedData` 与配置文件。
 
 ## 许可证
 

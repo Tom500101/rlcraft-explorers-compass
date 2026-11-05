@@ -45,6 +45,13 @@ public final class CompassConfig {
     @Config.Comment("Show the exact target coordinates on the HUD. When false only distance and direction are shown.")
     public static boolean showExactCoordinates = true;
 
+    @Config.Comment({
+            "Debug only: log the chunk random state RC is about to use (48 lines, overworld only).",
+            "Used to re-verify the ultra-rare replay after a Forge / RLTweaker update.",
+            "Leave false in normal play; the same switch also exists as -Drlcompass.rcprobe=true."
+    })
+    public static boolean debugRandomProbe = false;
+
     private CompassConfig() {
     }
 
