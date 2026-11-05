@@ -214,6 +214,32 @@ public final class SearchMemory {
         }
     }
 
+    /** Replaces the log with the current entries; used after a delete. */
+    private void rewrite() {
+        if (file == null) {
+            return;
+        }
+        try {
+            File parent = file.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+                return;
+            }
+            PrintWriter writer = new PrintWriter(new java.io.OutputStreamWriter(
+                    new java.io.FileOutputStream(file, false), StandardCharsets.UTF_8));
+            try {
+                for (Entry entry : entries.values()) {
+                    writer.println(entry.structureId + '\t' + entry.pos.getX() + '\t'
+                            + entry.pos.getY() + '\t' + entry.pos.getZ() + '\t'
+                            + entry.state.name());
+                }
+            } finally {
+                writer.close();
+            }
+        } catch (Throwable t) {
+            LOG.warn("[MEMORY] could not rewrite {}: {}", file.getName(), t.toString());
+        }
+    }
+
     private static File fileFor(World world) {
         if (world == null || world.getSaveHandler() == null) {
             return null;
@@ -265,6 +291,34 @@ public final class SearchMemory {
             append(updated);
         }
         LOG.info("[MEMORY] {} at ({}, {}) set to {}", structureId, pos.getX(), pos.getZ(), state);
+    }
+
+    /**
+     * Forgets one record, so a search may offer that spot again.
+     *
+     * <p>The log is append-only, so a delete cannot be expressed as another line; the whole file is
+     * rewritten from the surviving entries instead. The records are small (a few hundred lines at
+     * most), so this is cheaper than carrying tombstones that every reader would have to honour.
+     */
+    public void remove(String structureId, BlockPos pos) {
+        String key = key(structureId, pos.getX(), pos.getZ());
+        boolean removed;
+        synchronized (entries) {
+            removed = entries.remove(key) != null;
+            if (removed) {
+                rewrite();
+            }
+        }
+        if (removed) {
+            LOG.info("[MEMORY] removed {} at ({}, {})", structureId, pos.getX(), pos.getZ());
+        }
+    }
+
+    /** True when nothing is on record; the warehouse uses it to show its empty hint. */
+    public boolean isEmpty() {
+        synchronized (entries) {
+            return entries.isEmpty();
+        }
     }
 
     /** Every entry, ordered so the warehouse list is stable between openings. */

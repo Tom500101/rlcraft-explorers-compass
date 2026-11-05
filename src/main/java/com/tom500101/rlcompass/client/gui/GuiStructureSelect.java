@@ -15,10 +15,12 @@ import net.minecraft.client.resources.I18n;
 import net.minecraft.init.SoundEvents;
 
 import com.tom500101.rlcompass.client.ClientSearchStatus;
+import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureVariant;
 import com.tom500101.rlcompass.network.PacketHandler;
 import com.tom500101.rlcompass.network.PacketSearchRequest;
+import com.tom500101.rlcompass.util.StructureNameUtil;
 
 /**
  * Structure picker shown when the compass is right-clicked.
@@ -61,6 +63,7 @@ public class GuiStructureSelect extends GuiScreen {
     private TransparentButton cancelButton;
     private TransparentEditBox searchBox;
     private StructureSearchList selectionList;
+    private RadiusSlider radiusSlider;
 
     private SortMode sortMode = SortMode.NAME;
     private String lastFilter = "";
@@ -99,6 +102,12 @@ public class GuiStructureSelect extends GuiScreen {
         buttonList.add(sortButton);
         buttonList.add(cancelButton);
 
+        // Radius is the one setting a player actually needs to touch during a search: the ultra-rare
+        // structures cannot be found at the default radius, so it lives on the action column instead
+        // of behind a config file.
+        radiusSlider = new RadiusSlider(LEFT_X, 115, LEFT_WIDTH, BUTTON_HEIGHT, 100, 100000, 100,
+                CompassConfig.searchRadius);
+
         searchBox = new TransparentEditBox(0, fontRenderer, LIST_LEFT, 10, SEARCH_BOX_WIDTH,
                 BUTTON_HEIGHT);
         searchBox.setEnableBackgroundDrawing(false);
@@ -134,11 +143,45 @@ public class GuiStructureSelect extends GuiScreen {
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
+        if (mouseButton == 0 && radiusSlider != null && radiusSlider.mousePressed(mouseX, mouseY)) {
+            return;
+        }
         if (mouseButton == 0 && selectionList.handleClick(mouseX, mouseY)) {
             return;
         }
         super.mouseClicked(mouseX, mouseY, mouseButton);
         searchBox.mouseClicked(mouseX, mouseY, mouseButton);
+    }
+
+    @Override
+    protected void mouseClickMove(int mouseX, int mouseY, int clickedMouseButton,
+                                  long timeSinceLastClick) {
+        super.mouseClickMove(mouseX, mouseY, clickedMouseButton, timeSinceLastClick);
+        if (radiusSlider != null) {
+            radiusSlider.mouseDragged(mouseX);
+        }
+    }
+
+    @Override
+    protected void mouseReleased(int mouseX, int mouseY, int state) {
+        super.mouseReleased(mouseX, mouseY, state);
+        // Persist only when the drag ends: ConfigManager.sync rewrites the whole file, so doing it
+        // per pixel would hammer the disk.
+        if (radiusSlider != null && radiusSlider.mouseReleased()) {
+            persistRadius();
+        }
+    }
+
+    /** Writes the slider value into the config field and flushes it to {@code config/rlcompass.cfg}. */
+    private void persistRadius() {
+        CompassConfig.searchRadius = radiusSlider.getValue();
+        try {
+            net.minecraftforge.common.config.ConfigManager.sync(
+                    com.tom500101.rlcompass.RLCompassMod.MODID,
+                    net.minecraftforge.common.config.Config.Type.INSTANCE);
+        } catch (Throwable ignored) {
+            // an unwritable config must not crash the screen; the value still applies this session
+        }
     }
 
     @Override
@@ -200,7 +243,27 @@ public class GuiStructureSelect extends GuiScreen {
             fontRenderer.drawString(I18n.format("gui.rlcompass.filter"), searchBox.x + 4,
                     searchBox.y + 6, GuiTheme.TEXT_HINT);
         }
+
+        radiusSlider.draw(mc, mouseX, mouseY);
+        int hintY = 140;
+        hintY = drawWrapped(I18n.format("gui.rlcompass.radiusHint"), hintY, GuiTheme.TEXT_INFO);
+        StructureSearchEntry selected = selectionList.getSelected();
+        if (selected != null && StructureNameUtil.isUltraRare(selected.getParentId())) {
+            // Ultra-rare structures have a per-chunk chance in the 1e-5 range: the default radius
+            // simply cannot contain one, and the player should know before waiting.
+            drawWrapped(I18n.format("gui.rlcompass.radiusUltraRare"), hintY + 2, GuiTheme.TEXT);
+        }
+
         super.drawScreen(mouseX, mouseY, partialTicks);
+    }
+
+    /** Draws text wrapped to the action column; returns the y below the last line. */
+    private int drawWrapped(String text, int y, int colour) {
+        for (String line : fontRenderer.listFormattedStringToWidth(text, LEFT_WIDTH)) {
+            fontRenderer.drawString(line, LEFT_X, y, colour);
+            y += 10;
+        }
+        return y;
     }
 
     @Override

@@ -11,17 +11,43 @@ gui.rlcompass.sortSource=来源
 gui.rlcompass.rowSource=来源: %s
 gui.rlcompass.rowId=ID: %s
 
+# 主界面每行右侧的维度标注
+gui.rlcompass.dim.overworld=主世界
+gui.rlcompass.dim.nether=下界
+gui.rlcompass.dim.end=末地
+
 # 搜索无结果时的聊天提示
 rlcompass.search.notFound=搜索范围内没有找到 %s
+
+# 结构只在别的维度生成时的聊天提示
+rlcompass.search.wrongDimension=%s 只会在 %s 生成，你当前在 %s
 
 # 搜索进行中的 HUD 提示
 rlcompass.hud.searching=搜索中
 
-# 建议点仓库：指南针给出过的全部候选点
-gui.rlcompass.warehouse=建议点
-gui.rlcompass.warehouse.title=建议点仓库
-gui.rlcompass.warehouse.empty=还没有搜索记录
+# 缓存仓库：指南针给出过的全部结果，支持增删改查
+gui.rlcompass.warehouse=缓存仓库
+gui.rlcompass.warehouse.title=缓存仓库
+gui.rlcompass.warehouse.empty=缓存仓库还是空的，搜索一次就会自动记录
+gui.rlcompass.warehouse.filter=筛选结构名或坐标
 gui.rlcompass.warehouse.searchAgain=再搜一次
 gui.rlcompass.warehouse.state.new=未探索
 gui.rlcompass.warehouse.state.found=已找到
 gui.rlcompass.warehouse.state.missing=未找到
+
+# 超稀有结构深度扫描（聊天框播报）
+rlcompass.shivaxi.started=深度扫描已开始：半径 %s 区块（共 %s 个），完成时会在聊天框播报
+rlcompass.shivaxi.running=已有扫描在跑：已扫 %s 个区块、%s 个候选；用 /rlcompass shivaxi cancel 停止
+rlcompass.shivaxi.progress=深度扫描：%s / %s 区块，可生成 %s，候选 %s，已用 %s 秒
+rlcompass.shivaxi.candidate=★ 候选 #%s：区块 (%s, %s)，约 (%s, %s) —— 48 格范围内找；已记入缓存仓库
+rlcompass.shivaxi.finished=深度扫描完成：%s 区块，可生成 %s，候选 %s，用时 %s 秒
+rlcompass.shivaxi.none=深度扫描完成：%s 区块，可生成 %s，没有候选，用时 %s 秒（可加大半径再试）
+rlcompass.shivaxi.stopped=深度扫描已停止：%s 区块，可生成 %s，候选 %s，用时 %s 秒
+rlcompass.shivaxi.notRegistered=注意：RC 结构注册表里没有 Shivaxi，这次扫描不可能命中
+rlcompass.shivaxi.unavailable=Recurrent Complex 不可用，无法扫描
+rlcompass.shivaxi.rejected=已排除 %s 个地形不符的位置：%s
+
+# 搜索半径滑条
+gui.rlcompass.radiusValue=半径 %s
+gui.rlcompass.radiusHint=半径越大，搜索越久
+gui.rlcompass.radiusUltraRare=超稀有结构：建议半径 100000，搜索可能需要数分钟

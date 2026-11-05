@@ -18,6 +18,7 @@ import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.network.PacketHandler;
 import com.tom500101.rlcompass.network.PacketStructureResult;
+import com.tom500101.rlcompass.util.StructureDimensions;
 
 /**
  * The Explorer's Compass.
@@ -71,11 +72,25 @@ public class ItemExplorersCompass extends Item {
         World world = player.getEntityWorld();
         BlockPos origin = player.getPosition();
         int dimension = world.provider.getDimension();
+        // A structure that only generates in another dimension cannot be "not found" — it was never
+        // searched. Refuse early and let the client name the dimension it belongs to.
+        if (!StructureDimensions.allows(structureId, variantId, dimension)) {
+            PacketHandler.sendToPlayer(PacketStructureResult.wrongDimension(structureId, dimension,
+                    variantId, StructureDimensions.of(structureId, variantId)), player);
+            return null;
+        }
         StructureResult result = StructureLocatorRegistry.get()
                 .findNearest(world, origin, structureId, CompassConfig.searchRadius, variantId);
         if (result == null) {
             PacketHandler.sendToPlayer(PacketStructureResult.notFound(structureId, dimension, variantId), player);
         } else {
+            // Every answer goes into the warehouse, so the next search moves on instead of
+            // repeating this spot; the row can be deleted there to make it searchable again.
+            com.tom500101.rlcompass.cache.SearchMemory memory =
+                    com.tom500101.rlcompass.cache.SearchMemory.get(world);
+            if (memory != null) {
+                memory.remember(result.getStructureId(), result.getPos());
+            }
             PacketHandler.sendToPlayer(PacketStructureResult.found(result.getStructureId(), result.getPos(),
                     dimension, result.getVariantId(), result.isVariantConfirmed()), player);
         }

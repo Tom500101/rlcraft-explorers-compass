@@ -21,12 +21,12 @@ public final class CompassConfig {
 
     @Config.Comment({
             "Maximum search radius in blocks.",
-            "Defaults to 10000. The upper bound is 20000: a themed Roguelike search replays every",
+            "Defaults to 10000. The upper bound is 100000: a themed Roguelike search replays every",
             "51-chunk grid candidate inside the radius, so its cost grows with the square of the",
-            "radius. 20000 already spans a full continent; larger values would mostly spend time",
-            "loading chunks the player will never visit."
+            "radius, so its cost grows with the square of the radius while coverage grows linearly.",
+            "Raise it for the ultra-rare structures: Shivaxi is roughly one per 1.3 million chunks."
     })
-    @Config.RangeInt(min = 100, max = 20000)
+    @Config.RangeInt(min = 100, max = 100000)
     public static int searchRadius = 10000;
 
     @Config.Comment({

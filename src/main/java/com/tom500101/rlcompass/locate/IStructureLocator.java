@@ -50,6 +50,20 @@ public interface IStructureLocator {
     }
 
     /**
+     * Search that skips places the player already has on record.
+     *
+     * <p>The warehouse is a cache of every answer the compass has given: once a spot is in it, a
+     * search must move on to the next candidate instead of offering the same place forever. Locators
+     * backed by a candidate list should override this and filter; the default keeps the old
+     * behaviour and relies on the registry's final check.
+     */
+    default StructureResult findNearest(World world, BlockPos playerPos, String structureId, int radius,
+                                        String variantId,
+                                        com.tom500101.rlcompass.cache.SearchMemory memory) {
+        return findNearest(world, playerPos, structureId, radius, variantId);
+    }
+
+    /**
      * Variants this locator can expose for {@code world}. An empty list means "no variant data";
      * the picker then shows only the parent row. Locators that do return variants should keep the
      * parent searchable as well.

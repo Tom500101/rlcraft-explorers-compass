@@ -30,6 +30,14 @@ public class PacketStructureResult implements IMessage {
     /** Empty on the wire when the search was for the parent structure. */
     private String variantId = "";
     private boolean variantConfirmed;
+    /**
+     * True when the pick cannot generate in the dimension the player is standing in. This is a
+     * distinct outcome from "not found": nothing was searched, so the client must name the
+     * dimension mismatch instead of claiming the radius came up empty.
+     */
+    private boolean wrongDimension;
+    /** Dimensions the structure does generate in, ordered overworld → nether → end. */
+    private int[] expectedDimensions = new int[0];
 
     /** Forge packet deserialisation hook. */
     public PacketStructureResult() {
@@ -37,12 +45,20 @@ public class PacketStructureResult implements IMessage {
 
     private PacketStructureResult(boolean found, String structureId, int dimension, BlockPos pos,
                                   String variantId, boolean variantConfirmed) {
+        this(found, structureId, dimension, pos, variantId, variantConfirmed, false, null);
+    }
+
+    private PacketStructureResult(boolean found, String structureId, int dimension, BlockPos pos,
+                                  String variantId, boolean variantConfirmed,
+                                  boolean wrongDimension, int[] expectedDimensions) {
         this.found = found;
         this.structureId = structureId == null ? "" : structureId;
         this.dimension = dimension;
         this.pos = pos;
         this.variantId = variantId == null ? "" : variantId;
         this.variantConfirmed = variantConfirmed;
+        this.wrongDimension = wrongDimension;
+        this.expectedDimensions = expectedDimensions == null ? new int[0] : expectedDimensions;
     }
 
     public static PacketStructureResult found(String structureId, BlockPos pos, int dimension) {
@@ -63,8 +79,28 @@ public class PacketStructureResult implements IMessage {
         return new PacketStructureResult(false, structureId, dimension, null, variantId, false);
     }
 
+    /**
+     * The pick exists, but never generates in the dimension the player is in. Sent instead of a
+     * plain "not found" so the client can say where it does generate.
+     */
+    public static PacketStructureResult wrongDimension(String structureId, int dimension,
+                                                       String variantId, int[] expectedDimensions) {
+        return new PacketStructureResult(false, structureId, dimension, null, variantId, false,
+                true, expectedDimensions);
+    }
+
     public boolean isFound() {
         return found && pos != null;
+    }
+
+    /** True when the search was refused because the structure belongs to other dimensions. */
+    public boolean isWrongDimension() {
+        return wrongDimension;
+    }
+
+    /** Dimensions the structure generates in; empty when the compass has no data for it. */
+    public int[] getExpectedDimensions() {
+        return expectedDimensions;
     }
 
     public String getStructureId() {
@@ -99,6 +135,13 @@ public class PacketStructureResult implements IMessage {
         dimension = buf.readInt();
         variantId = ByteBufUtils.readUTF8String(buf);
         variantConfirmed = buf.readBoolean();
+        wrongDimension = buf.readBoolean();
+        // Clamp before allocating: a malformed packet must not ask for a huge array.
+        int expectedCount = Math.max(0, Math.min(16, buf.readInt()));
+        expectedDimensions = new int[expectedCount];
+        for (int i = 0; i < expectedCount; i++) {
+            expectedDimensions[i] = buf.readInt();
+        }
         // Matches toBytes: the coordinates are present exactly when that flag was set.
         if (found) {
             pos = new BlockPos(buf.readInt(), buf.readInt(), buf.readInt());
@@ -115,6 +158,11 @@ public class PacketStructureResult implements IMessage {
         buf.writeInt(dimension);
         ByteBufUtils.writeUTF8String(buf, variantId == null ? "" : variantId);
         buf.writeBoolean(variantConfirmed);
+        buf.writeBoolean(wrongDimension);
+        buf.writeInt(expectedDimensions.length);
+        for (int expected : expectedDimensions) {
+            buf.writeInt(expected);
+        }
         if (writePos) {
             buf.writeInt(pos.getX());
             buf.writeInt(pos.getY());
@@ -140,6 +188,15 @@ public class PacketStructureResult implements IMessage {
                         ClientCompassState.setTarget(message.getStructureId(), message.getPos(),
                                 message.getDimension(), message.getVariantId(),
                                 message.isVariantConfirmed());
+                    } else if (message.isWrongDimension()) {
+                        ClientCompassState.clear();
+                        // Nothing was searched: say where the structure does generate instead of
+                        // reporting an empty radius, which would be misleading.
+                        Minecraft.getMinecraft().ingameGUI.getChatGUI().printChatMessage(
+                                new TextComponentTranslation("rlcompass.search.wrongDimension",
+                                        describe(message.getStructureId(), message.getVariantId()),
+                                        dimensionsText(message.getExpectedDimensions()),
+                                        dimensionsText(new int[]{message.getDimension()})));
                     } else {
                         ClientCompassState.clear();
                         // A miss used to be completely silent: the target simply vanished. Say which
@@ -172,6 +229,24 @@ public class PacketStructureResult implements IMessage {
                 pretty.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
             }
             return pretty.length() == 0 ? parent : pretty + " " + parent;
+        }
+
+        /** "Overworld / Nether" for a list of dimension ids, in the client's own language. */
+        private static String dimensionsText(int[] dimensions) {
+            if (dimensions == null || dimensions.length == 0) {
+                return "?";
+            }
+            StringBuilder text = new StringBuilder();
+            for (int dimension : dimensions) {
+                if (text.length() > 0) {
+                    text.append(" / ");
+                }
+                String key = com.tom500101.rlcompass.util.StructureDimensions.translationKey(dimension);
+                text.append(key == null
+                        ? com.tom500101.rlcompass.util.StructureDimensions.fallbackName(dimension)
+                        : net.minecraft.client.resources.I18n.format(key));
+            }
+            return text.toString();
         }
     }
 }

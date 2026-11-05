@@ -1,13 +1,16 @@
 package com.tom500101.rlcompass.locate.impl;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -16,6 +19,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
 
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -86,6 +90,7 @@ final class UltraRarePredictor {
     /** Key present means the structure declares a vanilla anchor; value may be an empty list. */
     private static final Map<String, List<String>> ANCHORS = new HashMap<String, List<String>>();
     private static final Map<String, File> FILES = new HashMap<String, File>();
+    private static final String MOD_ID = "reccomplex";
     private static final Pattern VANILLA_TYPE = Pattern.compile("\"type\"\\s*:\\s*\"vanilla\"");
 
     private UltraRarePredictor() {
@@ -408,24 +413,10 @@ final class UltraRarePredictor {
         }
         List<Filter> out = new ArrayList<Filter>();
         List<String> anchors = null;
-        File file = structureFile(structureId);
-        if (file != null && file.isFile()) {
-            try {
-                ZipFile zip = new ZipFile(file);
-                try {
-                    ZipEntry entry = zip.getEntry("structure.json");
-                    if (entry != null) {
-                        String json = new String(readAll(zip.getInputStream(entry)),
-                                StandardCharsets.UTF_8);
-                        anchors = parseAnchorExpressions(json);
-                        out.addAll(parseBiomeFilters(json));
-                    }
-                } finally {
-                    zip.close();
-                }
-            } catch (Throwable t) {
-                LOG.warn("[RC] could not read generation info of {}: {}", structureId, t.toString());
-            }
+        String json = readGenerationJson(structureId);
+        if (json != null) {
+            anchors = parseAnchorExpressions(json);
+            out.addAll(parseBiomeFilters(json));
         }
         Collections.sort(out, new Comparator<Filter>() {
             @Override
@@ -573,6 +564,94 @@ final class UltraRarePredictor {
             out.write(buffer, 0, read);
         }
         return out.toByteArray();
+    }
+
+    /**
+     * Reads the pack's {@code structure.json} for a structure id, falling back to the Recurrent
+     * Complex mod jar when the {@code .rcst} is not extracted to {@code structures/active} on disk.
+     * Most of RC's bundled structures — every {@code Village*} part, for example — ship only inside
+     * the jar, so without the fallback the predictor never sees them and returns no suggestion.
+     */
+    private static String readGenerationJson(String structureId) {
+        // Disk first: the structure may have been extracted (or added by a pack) to structures/active.
+        File file = structureFile(structureId);
+        byte[] rcst = null;
+        if (file != null && file.isFile()) {
+            try {
+                rcst = readAll(new FileInputStream(file));
+            } catch (Throwable ignored) {
+                rcst = null;
+            }
+        }
+        if (rcst == null) {
+            rcst = readRcstFromJar(structureId);
+        }
+        if (rcst == null) {
+            return null;
+        }
+        return extractStructureJson(rcst);
+    }
+
+    /** Reads an {@code .rcst} archive straight out of the Recurrent Complex mod jar. */
+    private static byte[] readRcstFromJar(String structureId) {
+        try {
+            net.minecraftforge.fml.common.ModContainer container =
+                    net.minecraftforge.fml.common.Loader.instance().getIndexedModList().get(MOD_ID);
+            File source = container == null ? null : container.getSource();
+            if (source == null || !source.isFile()) {
+                return null;
+            }
+            ZipFile jar = new ZipFile(source);
+            try {
+                String inner = findRcstEntry(jar, structureId);
+                if (inner == null) {
+                    return null;
+                }
+                ZipEntry entry = jar.getEntry(inner);
+                if (entry == null) {
+                    return null;
+                }
+                return readAll(jar.getInputStream(entry));
+            } finally {
+                jar.close();
+            }
+        } catch (Throwable t) {
+            LOG.warn("[RC] could not read {} from the Recurrent Complex jar: {}", structureId, t.toString());
+            return null;
+        }
+    }
+
+    /** First jar entry whose file name (ignoring its path) matches {@code <id>.rcst}. */
+    private static String findRcstEntry(ZipFile jar, String structureId) {
+        String target = structureId.toLowerCase(Locale.ROOT) + ".rcst";
+        Enumeration<? extends ZipEntry> entries = jar.entries();
+        while (entries.hasMoreElements()) {
+            ZipEntry entry = entries.nextElement();
+            if (entry.isDirectory()) {
+                continue;
+            }
+            String name = entry.getName().toLowerCase(Locale.ROOT);
+            if (name.equals(target) || name.endsWith("/" + target)) {
+                return entry.getName();
+            }
+        }
+        return null;
+    }
+
+    /** The {@code structure.json} payload of an {@code .rcst} archive (which is itself a zip). */
+    private static String extractStructureJson(byte[] rcst) {
+        try {
+            ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(rcst));
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if ("structure.json".equals(entry.getName())) {
+                    return new String(readAll(zis), StandardCharsets.UTF_8);
+                }
+            }
+        } catch (Throwable t) {
+            LOG.warn("[RC] could not extract structure.json from an rcst archive: {}", t.toString());
+        }
+        return null;
     }
 
     private static File structureFile(String structureId) {

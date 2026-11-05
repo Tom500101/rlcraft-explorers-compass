@@ -12,6 +12,8 @@ import net.minecraft.client.resources.I18n;
 import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
 
+import com.tom500101.rlcompass.util.StructureDimensions;
+
 /**
  * Scrollable list of structures, drawn as flat translucent rows.
  *
@@ -34,6 +36,8 @@ public class StructureSearchList extends GuiSlot {
     private static final int VARIANT_INDENT = 10;
     /** The selection layer bleeds this far past the row on every side. */
     private static final int SELECTION_BLEED = 4;
+    /** Minimum gap between the structure name and the right-aligned dimension tag. */
+    private static final int DIMENSION_GAP = 10;
 
     private final GuiStructureSelect parent;
     private final List<StructureSearchEntry> entries = new ArrayList<StructureSearchEntry>();
@@ -227,7 +231,14 @@ public class StructureSearchList extends GuiSlot {
                     this.left + MARKER_LEFT, yPos + 11, GuiTheme.TEXT);
         }
 
-        int textLimit = rowRight - 8 - textLeft;
+        // Dimension tag sits at the right edge of the name line; the name shrinks by its width so
+        // the two can never overlap, however long the structure name is.
+        String dimensions = dimensionLabel(entry);
+        int dimensionsWidth = dimensions.isEmpty()
+                ? 0
+                : this.mc.fontRenderer.getStringWidth(dimensions) + DIMENSION_GAP;
+        int textLimit = rowRight - 8 - textLeft - dimensionsWidth;
+
         this.mc.fontRenderer.drawStringWithShadow(
                 trim(entry.getDisplayName(), textLimit),
                 textLeft, yPos + 11, GuiTheme.TEXT);
@@ -237,6 +248,33 @@ public class StructureSearchList extends GuiSlot {
         this.mc.fontRenderer.drawStringWithShadow(
                 trim(I18n.format("gui.rlcompass.rowId", entry.getStructureId()), textLimit),
                 textLeft, yPos + 31, GuiTheme.TEXT_INFO);
+        if (!dimensions.isEmpty()) {
+            this.mc.fontRenderer.drawStringWithShadow(dimensions,
+                    rowRight - 8 - this.mc.fontRenderer.getStringWidth(dimensions),
+                    yPos + 11, GuiTheme.TEXT_INFO);
+        }
+    }
+
+    /**
+     * "Overworld" / "Nether / The End" for the row, or an empty string when the structure's
+     * dimensions are unknown. Unknown ids are deliberately left unlabelled rather than guessed.
+     */
+    private String dimensionLabel(StructureSearchEntry entry) {
+        int[] dimensions = StructureDimensions.of(entry.getParentId(), entry.getVariantId());
+        if (dimensions.length == 0) {
+            return "";
+        }
+        StringBuilder label = new StringBuilder();
+        for (int dimension : dimensions) {
+            if (label.length() > 0) {
+                label.append(" / ");
+            }
+            String key = StructureDimensions.translationKey(dimension);
+            label.append(key == null
+                    ? StructureDimensions.fallbackName(dimension)
+                    : I18n.format(key));
+        }
+        return label.toString();
     }
 
     @Override

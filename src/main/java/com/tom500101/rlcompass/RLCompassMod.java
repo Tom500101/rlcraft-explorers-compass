@@ -29,6 +29,7 @@ import com.tom500101.rlcompass.command.CommandRLCompass;
 import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.cache.BattleTowersRegionScanner;
+import com.tom500101.rlcompass.cache.ModdedStructureRegionScanner;
 import com.tom500101.rlcompass.cache.RcGenerationRecorder;
 import com.tom500101.rlcompass.cache.RecurrentComplexData;
 import com.tom500101.rlcompass.cache.SearchMemory;
@@ -90,6 +91,13 @@ public class RLCompassMod {
         MinecraftForge.EVENT_BUS.register(this);
         // RC wipes its own structure records on load, so they are captured at generation time.
         MinecraftForge.EVENT_BUS.register(new RcGenerationRecorder());
+        // Diagnostic: dumps the real chunk-random state before RLTweaker/RC touch it, so the
+        // ultra-rare replay can be checked against reality instead of assumed.
+        MinecraftForge.EVENT_BUS.register(new com.tom500101.rlcompass.cache.RcRandomProbe());
+        // Advances the ultra-rare deep scan a couple of milliseconds per tick instead of freezing
+        // the server for a minute.
+        MinecraftForge.EVENT_BUS.register(
+                new com.tom500101.rlcompass.locate.impl.ShivaxiLocator.Ticker());
         // Client classes do not exist on a dedicated server, so the HUD renderer is only touched here.
         if (event.getSide().isClient()) {
             ClientSetup.register();
@@ -120,6 +128,11 @@ public class RLCompassMod {
         // Battle Towers may no longer record positions (RLTweaker replaces the generator), so the
         // save's region files are scanned in the background before the first search asks for it.
         BattleTowersRegionScanner.prewarm(overworld);
+        // Dragon roosts and Lycanites dungeons leave no queryable index. Warm every dimension that
+        // holds region files: Lycanites builds Demonic Temple / Ashen Mausoleum in the Nether.
+        ModdedStructureRegionScanner.prewarm(overworld);
+        ModdedStructureRegionScanner.prewarm(server.getWorld(-1));
+        ModdedStructureRegionScanner.prewarm(server.getWorld(1));
         logRecurrentComplexCommands(server);
         if (Boolean.getBoolean(PROBE_PROPERTY)) {
             StructureProbe.probe(overworld, overworld.getSpawnPoint());

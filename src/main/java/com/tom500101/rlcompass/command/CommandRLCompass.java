@@ -19,6 +19,7 @@ import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureResult;
+import com.tom500101.rlcompass.util.StructureDimensions;
 import com.tom500101.rlcompass.util.StructureNameUtil;
 import com.tom500101.rlcompass.util.StructureProbe;
 
@@ -31,7 +32,8 @@ import com.tom500101.rlcompass.util.StructureProbe;
 public class CommandRLCompass extends CommandBase {
 
     private static final List<String> SUBCOMMANDS =
-            Arrays.asList("probe", "list", "find", "search", "rebuildcache", "cache");
+            Arrays.asList("probe", "list", "find", "search", "rebuildcache", "cache", "rccheck",
+                    "shivaxi");
 
     @Override
     public String getName() {
@@ -66,9 +68,24 @@ public class CommandRLCompass extends CommandBase {
             case "list": {
                 // P0: world-aware filter — hide ids whose locator has no data source in this world.
                 List<String> ids = StructureLocatorRegistry.get().getSelectableIds(world);
-                reply(sender, ids.isEmpty()
-                        ? "no structures registered"
-                        : "searchable: " + String.join(", ", ids));
+                if (ids.isEmpty()) {
+                    reply(sender, "no structures registered");
+                    return;
+                }
+                // Show the dimensions next to each id so an admin can see at a glance why a search
+                // in the current world can only answer "wrong dimension".
+                StringBuilder listed = new StringBuilder("searchable: ");
+                for (int i = 0; i < ids.size(); i++) {
+                    if (i > 0) {
+                        listed.append(", ");
+                    }
+                    listed.append(ids.get(i));
+                    int[] dimensions = StructureDimensions.of(ids.get(i));
+                    if (dimensions.length > 0) {
+                        listed.append(' ').append(dimensionNames(dimensions));
+                    }
+                }
+                reply(sender, listed.toString());
                 return;
             }
 
@@ -81,9 +98,18 @@ public class CommandRLCompass extends CommandBase {
                     reply(sender, structureId + " is blacklisted in the config");
                     return;
                 }
+                String canonicalId = StructureLocatorRegistry.canonical(structureId);
+                int dimension = world.provider.getDimension();
+                // A structure that only generates elsewhere was never searched, so say that instead
+                // of the generic "nothing within N blocks".
+                if (!StructureDimensions.allows(canonicalId, null, dimension)) {
+                    reply(sender, structureId + " only generates in "
+                            + dimensionNames(StructureDimensions.of(canonicalId))
+                            + "; you are in " + StructureDimensions.nameOf(dimension));
+                    return;
+                }
                 // Distinguish "this world cannot answer for the id" from "searched, nothing in
                 // range". The picker already hides unavailable ids; the command must say so too.
-                String canonicalId = StructureLocatorRegistry.canonical(structureId);
                 if (!StructureLocatorRegistry.get().getSelectableIds(world).contains(canonicalId)) {
                     reply(sender, structureId + " is not available in this world "
                             + "(another mod may have replaced its generation)");
@@ -118,14 +144,62 @@ public class CommandRLCompass extends CommandBase {
                 if (args.length < 2) {
                     throw new CommandException("usage: /rlcompass search <structureId>");
                 }
-                // Same code path the item takes, including the packet back to the client.
                 EntityPlayerMP player = getCommandSenderAsPlayer(sender);
+                int playerDimension = player.getEntityWorld().provider.getDimension();
+                // Same guard the item applies, so the console reply never contradicts the chat text.
+                if (!StructureDimensions.allows(args[1], null, playerDimension)) {
+                    reply(sender, args[1] + " only generates in "
+                            + dimensionNames(StructureDimensions.of(args[1]))
+                            + "; the player is in " + StructureDimensions.nameOf(playerDimension));
+                    return;
+                }
+                // Same code path the item takes, including the packet back to the client.
                 StructureResult result = ItemExplorersCompass.search(player, args[1]);
                 if (result == null) {
                     reply(sender, "nothing found for " + args[1]);
                 } else {
                     reply(sender, "sent to client: " + result);
                 }
+                return;
+            }
+
+            case "shivaxi": {
+                // Long-running replacement for the 200-block search: walks outward chunk by chunk
+                // and replays RC on every snowy one. Tick-sliced, so the game keeps running.
+                if (args.length >= 2 && "cancel".equalsIgnoreCase(args[1])) {
+                    reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.stopDeepScan());
+                    return;
+                }
+                int radiusChunks = 1200;
+                if (args.length >= 2) {
+                    try {
+                        radiusChunks = Math.max(8, Math.min(com.tom500101.rlcompass.locate.impl.ShivaxiLocator.MAX_CHUNK_RADIUS,
+                                Integer.parseInt(args[1])));
+                    } catch (NumberFormatException ignored) {
+                        // keep the default
+                    }
+                }
+                EntityPlayerMP player = getCommandSenderAsPlayer(sender);
+                reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.startDeepScan(
+                        world, player, player.getPosition(), radiusChunks));
+                return;
+            }
+
+            case "rccheck": {
+                // Accuracy check for the ultra-rare replay: can it reproduce structures RC really
+                // placed? Without this, a prediction for an unexplored chunk is just a guess.
+                // The optional count matters: records written before the category order was pinned
+                // came from a different (identity-hash) order and can never be replayed, so checking
+                // only the newest entries is what actually validates the mechanism.
+                int newest = 10;
+                if (args.length >= 2) {
+                    try {
+                        newest = Math.max(1, Math.min(200, Integer.parseInt(args[1])));
+                    } catch (NumberFormatException ignored) {
+                        // keep the default
+                    }
+                }
+                reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.diagnose(world, newest));
                 return;
             }
 
@@ -173,6 +247,24 @@ public class CommandRLCompass extends CommandBase {
 
     private static void reply(ICommandSender sender, String message) {
         sender.sendMessage(new TextComponentString("[rlcompass] " + message));
+    }
+
+    /**
+     * "overworld / nether" for command output. The command is server-side and does not know the
+     * caller's language, so the raw dimension names are used instead of localised labels.
+     */
+    private static String dimensionNames(int[] dimensions) {
+        if (dimensions == null || dimensions.length == 0) {
+            return "unknown dimensions";
+        }
+        StringBuilder text = new StringBuilder();
+        for (int dimension : dimensions) {
+            if (text.length() > 0) {
+                text.append(" / ");
+            }
+            text.append(StructureDimensions.nameOf(dimension));
+        }
+        return text.toString();
     }
 
     @Override

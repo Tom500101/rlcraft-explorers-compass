@@ -99,10 +99,14 @@ public final class StructureLocatorRegistry {
     }
 
     /**
-     * Ids the selection GUI may show in {@code world}: like {@link #getSelectableIds()}, but each
-     * id is kept only when at least one supporting locator answers
-     * {@link IStructureLocator#canAnswer(World, String)} == true <b>for that id</b>. Checking per
-     * locator instead would leak ids: the cache mirror can hold ruins while having no towers.
+     * Ids the selection GUI may show in {@code world}: supported, not blacklisted, and either
+     * answerable here or known to belong to another dimension.
+     *
+     * <p>The second case matters for the picker: a structure that only generates in the nether is
+     * still listed while the player stands in the overworld, with its dimension on the row, so a
+     * pick can answer "this only generates in the nether" instead of the id silently disappearing.
+     * Ids whose locator has no data source at all (mod not installed) stay hidden, which is what
+     * {@link IStructureLocator#canAnswer(World, String)} is for.
      *
      * <p>{@code null} keeps the legacy behaviour and performs no availability filtering, which is
      * what the title-screen smoke test needs.
@@ -111,7 +115,8 @@ public final class StructureLocatorRegistry {
         if (world == null) {
             return getSelectableIds();
         }
-        Set<String> ids = new LinkedHashSet<String>();
+        Set<String> answerableHere = new LinkedHashSet<String>();
+        Set<String> declared = new LinkedHashSet<String>();
         for (IStructureLocator locator : locators) {
             Collection<String> supported = locator.getSupportedIds();
             if (supported == null) {
@@ -122,19 +127,31 @@ public final class StructureLocatorRegistry {
                     continue;
                 }
                 String canonicalId = canonical(id);
+                declared.add(canonicalId);
                 if (locator.canAnswer(world, canonicalId)) {
-                    ids.add(canonicalId);
+                    answerableHere.add(canonicalId);
                 }
             }
         }
+        int dimension = world.provider.getDimension();
         List<String> selectable = new ArrayList<String>();
-        for (String id : ids) {
-            if (!CompassConfig.isBlacklisted(id)) {
+        for (String id : declared) {
+            if (CompassConfig.isBlacklisted(id)) {
+                continue;
+            }
+            if (answerableHere.contains(id) || belongsToOtherDimension(id, dimension)) {
                 selectable.add(id);
             }
         }
         Collections.sort(selectable);
         return selectable;
+    }
+
+    /** True when the id has a known dimension list that does not include {@code dimension}. */
+    private static boolean belongsToOtherDimension(String id, int dimension) {
+        int[] dimensions = com.tom500101.rlcompass.util.StructureDimensions.of(id);
+        return dimensions.length > 0
+                && !com.tom500101.rlcompass.util.StructureDimensions.allows(id, null, dimension);
     }
 
     /**
@@ -220,6 +237,10 @@ public final class StructureLocatorRegistry {
         double maxDistanceSq = (double) effectiveRadius * (double) effectiveRadius;
         StructureResult best = null;
         long searchStartedAt = System.currentTimeMillis();
+        // Every answer is cached in the warehouse; a spot already on record must not be offered
+        // again until the player deletes that row.
+        com.tom500101.rlcompass.cache.SearchMemory memory =
+                com.tom500101.rlcompass.cache.SearchMemory.get(world);
 
         for (IStructureLocator locator : locators) {
             if (!supports(locator, wanted)) {
@@ -228,7 +249,8 @@ public final class StructureLocatorRegistry {
             long startedAt = System.currentTimeMillis();
             StructureResult candidate;
             try {
-                candidate = locator.findNearest(world, playerPos, structureId, effectiveRadius, variantId);
+                candidate = locator.findNearest(world, playerPos, structureId, effectiveRadius,
+                        variantId, memory);
             } catch (Throwable t) {
                 LOG.error("[REGISTRY] {} threw while locating {}", locator.sourceName(), structureId, t);
                 continue;
@@ -245,6 +267,12 @@ public final class StructureLocatorRegistry {
             if (candidate.getDistanceSq() > maxDistanceSq) {
                 LOG.debug("[REGISTRY] discarding {} — {} blocks away, outside the {} block radius",
                         candidate, Math.round(candidate.getDistance()), effectiveRadius);
+                continue;
+            }
+            if (memory != null && memory.isKnown(candidate.getStructureId(), candidate.getPos())) {
+                LOG.info("[REGISTRY] {} at ({}, {}) is already in the warehouse; delete that row "
+                                + "to search it again", candidate.getStructureId(),
+                        candidate.getPos().getX(), candidate.getPos().getZ());
                 continue;
             }
             if (best == null || candidate.getDistanceSq() < best.getDistanceSq()) {

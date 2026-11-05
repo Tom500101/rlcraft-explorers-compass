@@ -316,7 +316,10 @@
    当前只剩 region 扫描（§4）这条记录型路径。
    下一步要**受控实验**：固定种子 + 已知塔位序列（逐个 `/tp` 验证），先证伪「偏移是常量还是按 chunk 奇偶」，
    再决定是否重写；实验结论出来前不要把公式放回主路径。
-2. **实机验收**：新版选择界面 / 仓库 / 锚点建议都只过了编译，还没进游戏看过（见 §11 的清单）。
+2. **实机验收**：三处实机 bug 的代码修复已完成并重新编译部署（见 §12），但都还没进游戏看过表现：
+   ① `VillageSavannaChandlery` 应能搜到并给出 vanilla anchor 村庄中心；
+   ② 仓库 `Done` 按钮应能关闭界面；③ 战斗高塔落点应更准（质心）且沙/冰塔检测恢复。
+   验收清单见 §11 第 3、4 项补充。
 3. 多人生存：仓库只读单机存档路径，联机下为空；需要的话要走服务端包。
 
 ## 10. RC 的 vanilla 锚点（2026-11-03 深夜）
@@ -342,7 +345,14 @@
   `id=`、裸生物群系名。旧实现按字符 split，`!($HOT | $DRY)` 会被拆坏。
 - **离线验证**：用同一套扫描逻辑复刻成 Python，对 jar 内 187 个结构比对「手写扫描 vs `json.loads`」，
   锚点表达式 187/187 一致。
-- **待实机**：`VillageSavannaChandlery` 应返回真实村庄中心（source 为 vanilla anchor），下一次搜索换下一座村庄。
+- **根因（实测 bug，2026-11-04）**：`filters()` 原本只查磁盘 `structures/active`，但 `VillageSavannaChandlery.rcst`
+  之类和所有 `Village*` 部件一样**只活在 RC 的 jar 内**（`assets/reccomplex/structures/active/structures/village/savanna/...`），
+  磁盘永远读不到 → `filters()` 返回空、`ANCHORS` 永不写入、`hasVanillaAnchor` 恒 false、锚点静默失效，
+  日志里 `-> null`。已加 jar 回退（`Loader.getIndexedModList().get("reccomplex")` 取 jar，`findRcstEntry` 按 `<id>.rcst`
+  名匹配，`extractStructureJson` 取 `structure.json`），磁盘优先、jar 兜底。
+- **验收**：搜 `VillageSavannaChandlery` 应出现日志
+  `[RC] vanilla anchor for 'VillageSavannaChandlery': village at (x, z) matches [type=savanna]`，
+  tp 过去落在村庄里；再搜一次换到下一座村庄。
 
 ## 11. 实机验收清单（本轮改动）
 
@@ -356,3 +366,913 @@
    `[RC] vanilla anchor for 'VillageSavannaChandlery': village at (x, z) matches [type=savanna]`，
    tp 过去应落在村庄里；再搜一次应换到下一座村庄。
 
+
+## 12. 三处实机 bug 修复（2026-11-04）
+
+基于 `latest.log` 三条反馈（搜不到 `VillageSavannaChandlery`、仓库 `Done` 按钮无反应、战斗高塔传送无塔），
+定位并修复了三个独立 bug，已重新编译部署（BUILD SUCCESSFUL，备份 `build/deploy-backup/20261104-005637`）。
+
+### 12.1 问题 A：搜不到 `VillageSavannaChandlery`（锚点静默失效）
+- **根因**：`UltraRarePredictor.filters()` 只查磁盘 `structures/active`。RC 内置的 `Village*` 部件
+  （含 `VillageSavannaChandlery`）只存在于 RC 的 jar 内，磁盘无此 `.rcst` → 过滤为空 → `ANCHORS` 不写入 →
+  `hasVanillaAnchor` 返回 false → `RecurrentComplexLocator.suggest` 直接 `-> null`，玩家收到"周围没有该结构"。
+- **修复**（`UltraRarePredictor`）：`readGenerationJson` 改为磁盘优先、jar 回退。
+  - `readRcstFromJar`：`Loader.instance().getIndexedModList().get("reccomplex").getSource()` 取 jar，
+    `findRcstEntry` 按 `<id>.rcst` 文件名匹配（忽略路径），`extractStructureJson` 从 rcst（zip）取 `structure.json`。
+  - 离线已确认 `VillageSavannaChandlery.rcst` 的 `generationInfos` 含 1 条 `type=vanilla`，
+    `biomeExpression=type=savanna`，`spawnShiftY=-2`。
+- **验收**：日志出现 `[RC] vanilla anchor for 'VillageSavannaChandlery': village at (x, z) matches [type=savanna]`。
+
+### 12.2 问题 B：仓库 `Done` 按钮无反应
+- **根因**：被改写的 `GuiSuggestionWarehouse.handleMouseInput()` 在 `wheel == 0`（即普通点击）时直接 `return`，
+  跳过了 `super.handleMouseInput()`；而基类正是在点击时调 `mouseClicked`（按钮和列表点击都靠它），
+  于是所有点击被吞掉，`Done` 按钮永不触发 `actionPerformed`。
+- **修复**：恢复 `super.handleMouseInput()` 调用——滚轮事件仍先处理（关菜单 + 滚列表），然后照常派发点击。
+- **验收**：仓库界面点 `Done` 应关闭界面回到父界面。
+
+### 12.3 问题 C：战斗高塔传送过去没有塔
+两个独立根因，都已修：
+- **坐标偏移（落点不准）**：原报告坐标为 chunk 中心 `chunkX*16+8`，改为方块质心 `chunkX*16+stats.centerX()`
+  （`centerX()/centerZ()` 为该 chunk 内被识别材质方块的 x/z 平均），落点更贴近真实塔身。
+- **致命：高度检测恒为 0（沙/冰塔检测失效）**：旧 `readSectionY` 只回扫 40 字节，但该 Anvil 格式里 `Y` 标签
+  位于 `Blocks` + `Data`（2048 字节）之后，Java 永远扫不到 → 高度恒 0，原 `height()>=MIN_TOWER_HEIGHT`
+  的沙/冰塔分支从未生效。修复为**双向查找**：先向前跳过 `Data` 数组再找 `Y`，再向后回退找 `Y`，
+  均校验值 ∈ [0,15]。新增 `scanForwardY` / `matchY` helper。
+- **撤销的误改**：曾给圆石家族加高度门槛（`MIN_COBBLE_TOWER_HEIGHT`），但绝对 Y 跨度区分不了"扁平误报"
+  与"真塔"（验证 chunk (6,6) 真塔高度仅 24，村庄/平台也占 1-2 区块层），且会误删矮塔——已撤销，
+  cobble 家族恢复为纯块数判断（`MIN_COBBLE` / `MIN_MOSSY`）；`MIN_TOWER_HEIGHT` 仅沙/冰塔仍用。
+- **诚实边界**：基于方块计数的 region 扫描本就是启发式，村庄或玩家地面建筑仍可能误报；
+  本次通过质心修正 + `readSectionY` 修复提升精度，但不保证 100% 命中。
+- **验收**：沙/冰塔应能重新被检出（高度不再恒 0）；cobble/mega/netherrack 家族落点更接近塔身。
+
+### 12.4 部署
+- 构建：`python mc_gradle.py --project . --task build`（BUILD SUCCESSFUL，约 11s）。
+- 部署：`deployToRlcraft` 已替换
+  `C:/Users/ww137/AppData/Roaming/.minecraft/versions/RLCraft/mods/rlcraft-explorers-compass.jar`，
+  旧 jar 备份于 `build/deploy-backup/20261104-005637`。
+
+## 13. 新增两个模组的结构：冰与火龙巢 + Lycanites 地牢（2026-11-04）
+
+用户要求把「冰与火」龙巢与「恐怖生物」地牢纳入指南针；同时 minecraft 目录已迁移到
+`D:/MinecraftData/versions/RLCraft`，`gradle.properties` 的 `rlcraft_mods_dir` 已同步改到新路径
+（`deployToRlcraft` 实测输出到 `D:/MinecraftData/versions/RLCraft/mods`）。
+
+### 13.1 版本核实（先看 jar，不采信通用资料）
+- 实际 jar：`iceandfire-1.7.1-1.12.2.jar`（`modid=iceandfire`，version 1.7.1）、
+  `lycanitesmobs-1.12.2-2.0.8.9.jar`。另有 `ice-rlcraft-optimizer-0.10.0.jar`，不影响生成记录。
+- **这个版本没有电龙**：`IceAndFireConfig` 无任何 lightning 字段，全 jar 0 个 class 提到 lightning；
+  `StructureGenerator` 只有 `FIRE_DRAGON_ROOST` / `ICE_DRAGON_ROOST` 与对应的 cave。
+  所以只提供火龙巢 / 冰龙巢两种变体，电龙巢不是本整合包的内容（那是更新版本 I&F 的东西）。
+- 龙巢生成：`event.StructureGenerator.generate` 按 chunk `Random.nextInt(400)` 判定
+  （`Generate Dragon Roost Chance=400`），**没有** MapGenStructure、没有位置列表、没有 WorldSavedData，
+  随机流与同 chunk 其它 feature 共用，无法像 §6 的 MapGen 网格那样重放 → 只能做记录型定位。
+- Lycanites：`ExtendedWorld`（WorldSavedData）的 `public Map<UUID,DungeonInstance> dungeons` 是权威记录。
+  `DungeonInstance` 有 `originPos` / `schematic` / `chunksBuilt`；`readFromNBT` 会用
+  `DungeonManager.getSchematic(NBT 的 Schematic)` 恢复 schematic，重启后 `schematic.name` 仍可读。
+  存档 `data/LycanitesMobs.dat` 实测有 6 条 `Dungeons`，例如
+  `streamshrine @ (4423,69,5415)`、`desertcrypts @ (2183,69,4999)`、`lushtomb @ (711,67,71)`。
+
+### 13.2 关键工程点：1.12.2 的 12 位方块 ID
+- `level.dat` 的 `FML.Registries["minecraft:blocks"].ids` 给出存档里的 ID→名字映射：
+  IAF 977–1017、Lycanites 1318–1460，**全部 > 255**。
+- 1.12.2 Anvil 用 `Blocks`(4096 低 8 位) + `Add`(2048 字节 nibble，第 8–11 位)。
+  不读 `Add` 会把每个模组方块误认成某个原版方块，一个都找不到。
+- 实现不硬编码 ID：扫描时从 `Block.REGISTRY` 反查名字→`Block.getIdFromBlock`，
+  `int[4096] categoryById` 直接按 12 位 id 索引；整合包增删模组导致 ID 漂移时仍正确。
+- 先检查 `Add` 是否存在、再检查 nibble 里有没有 0x3/0x5 段作为快速排除，避免全量遍历空 section。
+
+### 13.3 阈值来自存档实测，不是猜
+对 `测试` 存档 94 个 region / 9982 个 chunk 离线扫描（Python 复刻同一套规则）：
+- 火龙巢：`chared_*` 成片 40–621 个/chunk，`goldpile` 只在龙巢中心 1–10 个；
+  → `surface >= 100` 或 (`treasure >= 1` 且 `surface >= 40`)，有 treasure 标 confirmed。
+- 冰龙巢：`frozen_*` / `dragon_ice*` + `silverpile`，对称处理；本存档未出现（玩家没去过雪原龙巢）。
+- Lycanites 主题方块成片 154–499 个/chunk，零星散落仅 1–13 个 → 阈值 80。
+- 同 family+kind 且距离 <= 64 的 hit 合并成结构质心。
+- 复刻结果：**3 个火龙巢**（`(214,38)` confirmed、`(2469,5237)`、`(3080,5515)` confirmed）
+  + 10 处主题聚集（stream / desert / lush / ashen），与 `LycanitesMobs.dat` 的记录区域吻合。
+
+### 13.4 实现与接线
+- 新增 `cache/ModdedStructureRegionScanner.java`：一次扫描同时产出龙巢（fire/ice）与
+  7 种 Lycanites 主题 hit；按 mtime 缓存 + 后台预热；支持所有维度（下界地牢需要）。
+- 新增 `locate/impl/DragonRoostLocator.java`：id `rlcompass:dragonroost`，变体 `/fire` `/ice`。
+- 新增 `locate/impl/LycanitesDungeonLocator.java`：id `rlcompass:lycanitesdungeon`，
+  **优先反射 `ExtendedWorld.getForWorld(world).dungeons`**（精确、带 schematic 名、confirmed），
+  反射不可用或为空才降级 region 扫描（只带主题、unconfirmed）。
+  变体从 `DungeonManager.getInstance().schematics` 动态读取，`*_random` 折叠到主名。
+  9 个内置 schematic → 7 个变体：Aberrant Station / Demonic Temple / Ashen Mausoleum /
+  Desert Crypts / Lush Tomb / Shadow Labyrinth / Stream Shrine。
+- 接线：`ModLocatorRegistrar` 注册两个 locator；`StructureNameUtil` 加显示名；
+  `RLCompassMod.serverStarted` 预热主世界 / 下界 / 末地。
+- **地下龙穴**：已在 §14 用形状检测补上（球腔的空 Y 层 + 焦黑/冰封石材质）。
+
+### 13.5 诚实边界
+- 记录型路径：只能找到**已经写进 region 文件**的结构，没探索过的区块搜不到。
+- Lycanites 的 6 条记录里 5 条 `ChunksBuilt=0`（已规划、逐块建造未完成），tp 过去会触发
+  chunk 生成把地牢建出来；若暂时是空地，等区块加载完再看。
+- 龙巢的 `chared_*` 也可能由龙息烧毁地形产生（无金堆佐证时只是候选，不标 confirmed）；
+  Lycanites 主题方块也可能是玩家搬运的散块（阈值 80 已排除零星 1–13 的情况）。
+- 扫描是启发式；精确路径（Lycanites 自己的 DungeonInstance）优先级更高。
+
+### 13.6 待实机验收
+1. 选择界面出现 `Dragon Roost` 与 `Lycanites Dungeon` 两行，展开后分别有 2 / 7 个变体。
+2. 搜 `Dragon Roost` 应指向上述 3 个火龙巢之一；`/fire` 能过滤，日志出现
+   `[MODSCAN] region scan found N structures under ...` 与 `[MODSCAN] resolved ... block ids`。
+3. 搜 `Lycanites Dungeon` 应返回 `LycanitesMobs.dat` 里的 6 个 `OriginPos` 之一，
+   source 为 `LycanitesMobs`（而非 `LycanitesScan`）；按变体搜索能按 schematic 过滤。
+4. 进下界搜 `Demonic Temple` / `Ashen Mausoleum`。
+
+### 13.7 部署
+`python mc_gradle.py --project . --task build` → BUILD SUCCESSFUL（14s），
+jar 303366 B，已确认含 `ModdedStructureRegionScanner` / `DragonRoostLocator` /
+`LycanitesDungeonLocator` 的 class；`deployToRlcraft` 替换到
+`D:/MinecraftData/versions/RLCraft/mods/rlcraft-explorers-compass.jar`，
+旧 jar 备份 `build/deploy-backup/20261104-153833`。
+
+## 14. 地下龙穴：球形空腔的形状检测（2026-11-04）
+
+用户要求补上地下龙穴（Dragon Caves），并明确"最核心的特征是巨大的、近似球形的空腔，
+火龙穴由焦黑石、冰龙穴由冰封石构成"。
+
+### 14.1 生成器实际行为（反编译 IAF 1.7.1 确认）
+`WorldGenFireDragonCave.func_180709_b` / `WorldGenIceDragonCave`：
+- `size = 75 + rand(50)`，`half = size/4`（18–31），`inner = half - 2`（16–29）。
+- 球心 **`Y = 20 + rand(20)`（20–39）**，纯地下；调用前还要求该位置不是空气。
+- 四层球体：
+  1. 用 `half` 半径把球内填成 **stone**；
+  2. 用 `inner` 半径、垂直半轴 `inner/2` 挖成 **air**（扁椭球空腔）；
+  3. 用 `inner` 作三轴半径的 **球**，对球内非空气方块调用 `setOres`：
+     40–50 区间由 `silverOre`/`charedStone`（冰版 `sapphireOre`/`frozenStone`）与
+     `charedCobblestone`（冰版 `frozenCobblestone`）各半填充；
+  4. 在空腔底部放 `goldPile` / `silverPile`，并生成一条 `EntityFireDragon` / `EntityIceDragon`
+     （`growDragon(size)` + `setAgingDisabled(true)`）。
+- 所以龙穴 = **球形矿壳 + 内部扁空腔**；龙巢 = 从地表往下烧实的球冠。两者材质相同。
+
+### 14.2 为什么不能用 Y 跨度 / 方块数
+实测：龙巢 (13,1) 的焦黑石 Y 9–45（跨度 36），龙穴 (154,327) 的 Y 8–66（跨度 58）——
+数量与跨度都重叠。真正的区别在**内部的空层**。
+
+### 14.3 判据（形状检测）
+在 `ModdedStructureRegionScanner` 中，每个 chunk 为 fire / ice 各维护一个 256 层的 Y 直方图：
+- 找出该 chunk 内该类方块的最小/最大 Y；
+- 统计两者之间**完全没有该方块**的连续层数 `maxGap`；
+- `span >= 24` 且 `maxGap >= 16` → 该 chunk 有"空腔证据"；
+- 同一簇（同材质、距离 ≤64）内**任一 chunk** 有证据 → 整簇判为 `dragoncave`，否则 `dragonroost`。
+
+阈值 16 同时是几何下界：矿壳垂直半轴 `inner`(16–29) 减去空腔半轴 `inner/2`(8–15)，
+空洞约 `inner` 层。实测：真龙穴中心 chunk `maxGap=42`；龙巢最大的 chunk 只有 9–12
+（地表起伏造成的假空洞），16 正好落在两者之间。
+
+**必须逐 chunk 判定**：最初版本把整簇直方图并起来再找空洞，结果 3 个龙巢全被误判成龙穴——
+龙巢的 8 个 chunk 分别覆盖 Y 15–23 和 37–46，并集里 24–36 天然为空。这个坑已写进代码注释。
+
+### 14.4 实测结果（`测试` 存档，94 region / 9982 chunk，Python 复刻同一套规则）
+```
+ROOST fire at (  214,   38) chunks= 8 maxGap= 9 confirmed=True
+ROOST fire at ( 3080, 5515) chunks= 6 maxGap=12 confirmed=True
+CAVE  fire at ( 2469, 5237) chunks=11 maxGap=42 confirmed=False
+```
+真值：`chunk(154,327)` 的实体列表里有 `iceandfire:firedragon @ (2472.5, 37.5, 5240.5)`，
+与判出的龙穴 (2469, 5237) 相差 3 格，**方向与位置都对上**。该 chunk 的直方图为
+Y 8–21 与 53–66 两段、22–52 全空，正是球腔的上下壳。
+
+### 14.5 代码变更
+- `ModdedStructureRegionScanner`：
+  - `Hit` 增加 `yOccupied` / `minY` / `maxY` / `caveEvidence`；
+  - `Stats` 增加逐层直方图与 `hasCavity(category)`；
+  - `scanSections` 解析 section 的 `Y`（双向查找，Anvil 可能把 Y 写在 Blocks+Data 之后）；
+  - `merge` 改为 `Cluster`，`caveEvidence` 按簇 OR。
+- `DragonRoostLocator`：支持两个 id —— `rlcompass:dragonroost`、`rlcompass:dragoncave`，
+  各带 `/fire`、`/ice` 变体（共 4 个）。
+- `StructureNameUtil`：新增 `rlcompass:dragoncave` → `Dragon Cave`。
+
+### 14.6 部署
+BUILD SUCCESSFUL（13s），`deployToRlcraft` 替换
+`D:/MinecraftData/versions/RLCraft/mods/rlcraft-explorers-compass.jar`，
+旧 jar 备份 `build/deploy-backup/20261104-155344`。
+
+## 15. Bug 修复：Add 数组在 Blocks 之前，导致上壳丢失、龙穴被报成龙巢（2026-11-04 下午）
+
+### 15.1 现象
+实机搜索 `rlcompass:dragonroost`，第二次返回 `(2599, 64, 5335)`，tp 过去是**龙穴**：
+日志 `findNearest(rlcompass:dragonroost variant=.../fire) from (2452, 5234) -> (2599,64,5335) dist=178`。
+同时每次搜索都有 `IceAndFireScan took 3370 ms` 警告。
+
+### 15.2 根因：`findAddTag` 向前优先拿错了 section 的 Add
+这个存档的 Anvil 布局是 **`Add` 紧贴在 `Blocks` 之前**（payload 结束正好早 2048 字节），
+而 `Y` 在 `Blocks + Data` 之后（+6172）。原实现先向前找 `Add`，于是拿到的是**下一个
+section 的 Add**，`possible` 校验失败，整个 section 被丢弃：
+
+```
+chunk(162,333)
+Blocks@3180  addFwd=-1     addBack=1132  used=1132  possible=True   chared=2201  ✓
+Blocks@25842 addFwd=36154                possible=False            chared=0     ✗ 丢了 1833 个
+```
+
+上壳（Y 33–42，1833 个焦黑石）整段丢失，直方图只剩 Y 2–11 的下壳：
+`maxY` 从 42 掉到 11，`span` 从 40 掉到 9，低于 `CAVE_SPAN_MIN=24` → 判 ROOST。
+**这才是"龙巢坐标实际是龙穴"的真正原因**，与判据阈值无关。
+
+### 15.3 修复
+- `findAddTag` 改为**向后优先**（`blocksPayload - 2600` 起），找不到再向前（兼容原版顺序）。
+- `Cache` 改为**按文件增量**：只重读 mtime 变化的 region 文件。日志里 3.3 s 的全量重扫
+  （94 个文件、每次搜索都发生，因为游戏持续写 region）降到只重读 1–2 个文件。
+
+### 15.4 修复后的分类（真实存档，Python 复刻同一套规则）
+```
+CAVE  fire ( 215,   39) chunks=9  minY= 8 maxY=46 maxGap=19 confirmed=True
+ROOST fire (2263, 5175) chunks=5  minY=51 maxY=67 maxGap= 0 confirmed=True
+CAVE  fire (2599, 5335) chunks=9  minY= 2 maxY=42 maxGap=21 confirmed=True
+CAVE  fire (3079, 5511) chunks=9  minY= 8 maxY=42 maxGap=19 confirmed=True
+CAVE  fire (2471, 5239) chunks=21 minY= 8 maxY=66 maxGap=31 confirmed=False
+```
+
+### 15.5 实体仲裁（关键）
+扫描各 chunk 的 `Entities`，带 `AgingDisabled=1`（只有龙穴生成时设置）的龙：
+
+| chunk | 实体 | Y | AgingDisabled |
+|---|---|---|---|
+| (13,2) | iceandfire:firedragon | 18.9 | 1 |
+| (154,327) | iceandfire:firedragon | 22.0 | 1 |
+| (162,333) | iceandfire:firedragon | 12.9 | 1 |
+
+三条都在地下 Y 12–22，**证明这三个"CAVE"判定都是真的龙穴**，不是误判。
+其中 (215,39) 与 (3079,5511) 的地表同时被龙巢烧过（其余 8 个 chunk 直方图连续、无空层），
+属于**龙巢与龙穴重叠**：地下是龙穴，地表是龙巢，两种结构共用同一片焦黑石。
+因此这两个位置会出现在 Dragon Cave 列表里；搜 Dragon Cave 得到同一坐标，tp 到地表仍是龙巢。
+
+### 15.6 已知限制
+- 纯龙穴与"龙巢+龙穴重叠"在方块层面无法区分：龙穴的上壳本身就是一层地表焦黑石，
+  与龙巢的烧焦球冠在直方图上完全同形。只能靠实体 `AgingDisabled` 仲裁，但实体可能游荡/被杀。
+- 当前策略是"有空洞证据即归 Dragon Cave"，宁可少报龙巢，不再把龙穴错报成龙巢。
+
+## 16. 改用 Y 最低点判定，取代空洞形状检测（2026-11-04 傍晚）
+
+### 16.1 用户的判断是对的
+用户指出"龙巢在地面，龙穴在地下，用 Y 值判定就行"。全量扫描 53 个含焦黑石的 chunk 后确认：
+**龙穴与龙巢的最低点完全不重叠**。
+
+| 类型 | chunk | minY |
+|---|---|---|
+| 龙穴 | (162,333) | 2 |
+| 龙穴 | (161,333)/(163,333) | 3 |
+| 龙穴 | (154,327)/(13,2)/(192,344) | 8 |
+| 龙巢 | (13,1)/(13,3)/(14,2) | 9 |
+| 龙巢 | (12,2) | 10 |
+| 龙巢（高海拔） | (141,323) | 51 |
+
+判据：**`minY <= 8` → Dragon Cave，否则 Dragon Roost**（`CAVE_DEEP_FLOOR_MAX = 8`）。
+几何依据：龙穴球心固定 `Y = 20 + rand(20)`（20–39），半径 16–29，壳底必然落到 Y 0–8；
+龙巢从地表往下烧，最低也只到 Y 9。
+
+### 16.2 为什么之前用"Y 范围"看起来重叠
+龙穴半径大，**maxY 会顶到地表甚至更高**（(154,327) maxY=66、(162,333) maxY=42），
+与龙巢的 maxY（41–67）交叠。但**最低点**是干净的。之前用 span/gap 是绕远了。
+
+### 16.3 分类粒度改为 chunk 级
+`emitRoost` 里逐 chunk 判定 family（cave / roost），`merge` 按 family 分簇，
+所以"地表龙巢 + 地下龙穴"重叠的区域会产出**两个 hit**（坐标相差 1–2 格），
+而不是被合并成一个猜测。`Cluster.toHit` 不再改写 family。
+
+### 16.4 结果（真实存档）
+```
+CAVE  fire (  216,   40) chunks= 1 minY= 8 maxY=46 confirmed=True
+CAVE  fire ( 2471, 5240) chunks= 1 minY= 8 maxY=66 confirmed=False
+CAVE  fire ( 3080, 5511) chunks= 1 minY= 8 maxY=42 confirmed=True
+CAVE  fire ( 2599, 5335) chunks= 9 minY= 2 maxY=42 confirmed=True
+ROOST fire (  215,   39) chunks= 8 minY= 9 maxY=45 confirmed=True
+ROOST fire ( 2263, 5175) chunks= 5 minY=51 maxY=67 confirmed=True
+ROOST fire ( 3079, 5511) chunks= 8 minY= 9 maxY=41 confirmed=True
+ROOST fire ( 2471, 5239) chunks=20 minY= 9 maxY=65 confirmed=False
+```
+实体验证：四个 CAVE 分别对应 chunk (13,2) Y=18.9、(154,327) Y=22.0、
+(192,344) Y=16.9、(162,333) Y=12.9，均 `AgingDisabled=1`（龙穴专属）。
+`(2599,5335)` 没有对应 ROOST，说明那片只有龙穴、没有地表龙巢。
+
+### 16.5 边界
+- 冰龙穴在雪原高海拔，球心仍在 Y 20–39，壳底同样 ≤8，判据同样成立（本存档未出现冰龙穴）。
+- 重叠区域会同时列出 roost 与 cave，坐标相差 1–2 格；tp 到地表是龙巢，原地向下是龙穴。
+
+## 17. 用宝藏深度判定龙穴；缓存仓库改造（2026-11-04 晚）
+
+### 17.1 判据改为"宝藏 Y"（用户指出）
+用户指出：龙穴顶部有迷惑性，但**箱子和金堆只在底部**。实测每 chunk 的 goldpile Y：
+
+| chunk | 归属 | gold 数 | gold Y |
+|---|---|---|---|
+| (162,333) | 龙穴 | 54 | 12 |
+| (161,333)/(163,333)/(162,332)/(162,334) | 同一龙穴 | 23-35 | 12-21 |
+| (13,2) | 龙穴 | 59 | 18 |
+| (13,1)/(12,2)/(14,2) | **同一龙穴的侧壁** | 18-27 | 18-25 |
+| (192,344) | 龙穴 | 46 | 16 |
+| (191,344) | 同一龙穴侧壁 | 16 | 16-23 |
+| (141,323) | 真龙巢 | 23 | **57-64** |
+
+结论：**龙穴宝藏 Y 12–25，真龙巢 Y 57–64**，阈值取 **30**（`CAVE_TREASURE_MAX_Y`）。
+这也证明 (13,1) 一带不是"龙巢+龙穴重叠"，而是**整片都是一个龙穴**——用户第一次 tp 看到的地表
+焦黑是它的上壳，不是龙巢。
+
+判定顺序（`Cluster.toHit`）：
+1. 簇内有宝藏 → `treasureMinY <= 30` 即 CAVE，否则 ROOST；
+2. 无宝藏（如 (154,327) 一带 setGoldPile 未触发）→ 退回壳底 `minY <= 8`；
+3. 再退回空层 `gap >= 13`。
+
+修复后（真实存档）：
+```
+CAVE  fire (2599,5335) treasureY=12
+CAVE  fire ( 215,  39) treasureY=18
+CAVE  fire (3079,5511) treasureY=16
+CAVE  fire (2471,5239) treasureY=— (minY=8 兜底)
+ROOST fire (2263,5175) treasureY=57   ← 全局唯一真龙巢
+```
+
+### 17.2 缓存仓库（增删改查）
+- **增**：`ItemExplorersCompass.search` 每成功一次就 `SearchMemory.remember(id, pos)`。
+- **查**：界面顶部筛选框，按结构名或坐标过滤，位置/尺寸与主 GUI 完全一致
+  （`LIST_LEFT=130, y=10, 150x20`，占位符同款）。
+- **改**：点状态格弹三态菜单（未探索/已找到/未找到）；id 与坐标不可改，它们是世界事实。
+- **删**：每行最右侧 `x` 键，`SearchMemory.remove` 从 TSV 中真正删掉该行（重写文件），
+  该位置重新可被搜到。
+- **已记录则跳过**：
+  - `IStructureLocator` 新增带 `SearchMemory` 的重载；
+  - `DragonRoostLocator` / `LycanitesDungeonLocator` 在候选循环里跳过已记录项，**自动前进到下一个**；
+  - `StructureLocatorRegistry` 统一兜底：结果已在仓库则丢弃并记日志，删除该行后恢复。
+- **布局防重叠**：行高 28，固定四列 —— 名称（左上）、坐标（左下）、状态按钮（右侧 66px）、
+  删除键（最右 16px）。名称按 `statusLeft - 6 - textLeft` 截断，不再与坐标右对齐文字相撞。
+
+### 17.3 部署
+BUILD SUCCESSFUL（12s），部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261104-190231`。
+
+## 18. 结构维度标注 + "不在当前维度"返回（2026-11-04 深夜）
+
+用户要求：主界面每个结构标注会刷新在哪个维度；搜索提示新增一种返回「该结构不在当前维度」。
+
+### 18.1 维度表的来源（不是猜的）
+新增 `util/StructureDimensions.java`，手工维护 id → 维度，来源逐条核实：
+
+| 结构 | 维度 | 依据 |
+|---|---|---|
+| vanilla 六种（stronghold / village / mineshaft / temple / monument / mansion） | 主世界 | 都注册在主世界的 MapGen |
+| `rlcompass:ruin`、`roguelike:dungeon`、`doomlike:dungeon` | 主世界 | 生成器绑定主世界 |
+| `rlcompass:dragonroost`、`rlcompass:dragoncave` | 主世界 | IAF `StructureGenerator` 入口只在主世界 |
+| `rlcompass:battletower` | 主世界 + 下界 | 模组有 netherrack 塔；scanner 按 world 取 region 目录，两界都能扫 |
+| `rlcompass:lycanitesdungeon` | 主世界 + 下界 + 末地 | 各 schematic conditions 的并集 |
+| `reccomplex:structure` | **未知（不入表）** | 结构包含下界/末地体，同一 id 无法断言 |
+
+Lycanites 变体的维度直接取自 jar 内每个 schematic 的 `conditions.dimensionIds`：
+
+```
+aberrantstation      [0]      aberrantstation_random   [1, -1]   → 合并 {0,-1,1}
+demonictemple        [-1]     ashenmausoleum           [-1]
+desertcrypts         [0]      lushtomb                 [0]
+streamshrine         [0]      shadowlabyrinth          [0]
+shadowlabyrinth_random [1]                              → 合并 {0,1}
+```
+
+关键设计：**表里没有的 id 返回空数组 = 未知**，不显示标签、也**永不拦截**搜索。
+只有"明确列在别的维度"才会拒绝，避免因为表漏项而误挡一个本可搜到的结构。
+
+### 18.2 主界面标注
+`StructureSearchList.drawSlot` 在名称行右端画维度标签（暗色 `TEXT_INFO`），
+名称可用宽度减去标签宽度 + 10px 间隔，因此再长的名字也不会与标签重叠。
+变体行优先用变体自己的维度（如 `Demonic Temple` 显示"下界"），父行用父级并集。
+`gui.rlcompass.dim.overworld|nether|end` 三条词条本地化。
+
+### 18.3 新增搜索结果：wrongDimension
+`PacketStructureResult` 增加 `wrongDimension` + `expectedDimensions[]`（协议同步改）。
+`ItemExplorersCompass.search` 在**搜索之前**判断：
+
+```java
+if (!StructureDimensions.allows(structureId, variantId, dimension)) {
+    send(PacketStructureResult.wrongDimension(id, dimension, variantId, dims));
+    return null;   // 没有搜索，所以不是 "not found"
+}
+```
+
+客户端收到后清空目标并提示
+`rlcompass.search.wrongDimension=%s 只会在 %s 生成，你当前在 %s`
+（例：「Demonic Temple 只会在 下界 生成，你当前在 主世界」）。
+
+### 18.4 选择列表必须跨维度（否则玩家选不到）
+`StructureLocatorRegistry.getSelectableIds(World)` 原先只保留 `canAnswer(world, id)` 的 id，
+在别的维度打开界面时主世界结构会整体消失，玩家根本触发不到上面的提示。改为：
+
+- 当前维度可答 → 列出；
+- 否则若 `StructureDimensions` 明确该 id 属于别的维度 → **仍然列出**（带维度标签）；
+- 模组没装（IAF / Lycanites 未安装，canAnswer 为 false 且不属于别的维度）→ 仍隐藏。
+
+### 18.5 命令
+- `/rlcompass list` 每个 id 后附 `overworld / nether` 等维度名。
+- `/rlcompass find <id>` 与 `/rlcompass search <id>` 在维度不符时明确回复
+  `X only generates in nether; you are in overworld`，不再是笼统的 "nothing within N blocks"。
+
+### 18.6 离线验证
+用编译产物直接跑断言（26 条，全通过）：父级并集、变体覆盖、未知 id 不拦截、
+village 在下界/末地被拦、demonictemple 在主世界被拦但在下界放行、
+aberrantstation 在末地放行、`village` / `MINECRAFT:VILLAGE` 归一化一致。
+
+### 18.7 部署
+BUILD SUCCESSFUL（11s），jar 314761 B，已确认含 `StructureDimensions` 与两份 lang 词条，
+部署 `D:/MinecraftData/versions/RLCraft/mods`，备份 `build/deploy-backup/20261104-222428`。
+
+### 18.8 边界
+- 维度表是**静态**的：整合包若改了某结构的生成维度，需要同步这张表；
+  表里没有的 id 只显示不出标签，不会误拦，属于安全失败。
+- 部分结构的维度是"并集"粒度（父行），变体行才精确到下界/末地；未单独列出的变体继承父级。
+- 冰与火龙巢/龙穴虽在主世界，但只存在于雪原/沙漠等群系，维度标注不涉及群系过滤。
+
+## 19. 超稀有结构：Shivaxi（天空之城）定位（2026-11-04 深夜）
+
+### 19.1 结构本体（先找到文件，不靠资料）
+- 首选搜索路径错了三处（`config/recurrentcomplex`、jar 内 187 个 `.rcst`、Ruins 的 `ruins_config`），
+  最后在**实例根目录**找到：`D:/MinecraftData/versions/RLCraft/structures/active/Shivaxi.rcst`。
+- 同目录另有 `inactive/ShivaxiDragon.rcst`、`inactive/ShivaxiTwitchSpawn.rcst`，均未启用。
+- `structure.json` 关键字段：
+  ```json
+  {"type":"natural","generationInfo":{
+     "generationCategory":"ultrarare",
+     "generationBiomes":[{"biomes":"$SNOWY"}],
+     "dimensionWeightsPreset":"overworld",
+     "id":"natural_3f345653",
+     "placer":{"factors":[...FactorLimit/FactorMatch, requiredConformity:0.99141634...]}}}
+  ```
+  → 自然生成、`ultrarare` 类别、**只认 `$SNOWY` 生物群系标签**、主世界；
+  放置要求 99.14% 方块一致性——这就是"失败率很高"的来源。
+
+### 19.2 真实概率（比工具提示稀有得多）
+`assets/reccomplex/structures/active/categories/ultrarare.rcnc`：
+```json
+{"defaultSpawnChance":1.5E-4,"spawnDistanceMultiplier":0.0,"spawnDistanceMultiplierCap":1.0}
+```
+`SimpleCategory.structuresInBiome` 的实际判定（反编译）：
+```
+nextDouble() < spawnChance * amountMultiplier(totalWeight) * distanceMultiplier * RCConfig.structureSpawnChanceModifier
+amountMultiplier(w) = min(w / getActiveStructureMinCap(), 1)      // STRUCTURE_MIN_CAP_DEFAULT = 20.0
+distanceMultiplier  = 1.0（spawnDistanceMultiplier=0）
+structureSpawnChanceModifier = 1.0（reccomplex.cfg: structureSpawnChance=1.0）
+```
+`ultrarare` 只有 **3 个**结构（`Shivaxi`、`P_IceCity`、`RLCraft_2_9_Update_Build`），
+每个 weight 默认 1.0 → totalWeight=3.0 → amountMultiplier= **0.15**。
+
+所以：
+- 每 chunk 触发 ultrarare：`1.5e-4 × 0.15 = 2.25e-5`
+- 其中选中 Shivaxi：`÷3 = 7.5e-6`
+- 再乘雪原比例（约 5%）与放置成功率（<20%）→ **约 1/1300 万 chunk**
+
+"每 6666 区块"只是 `defaultSpawnChance` 的倒数值，没有算 `amountMultiplier` 与 1/3 的份额。
+
+### 19.3 为什么理论上可精确重放
+逐层反编译确认：
+1. `ChunkGeneratorOverworld.populate`：`rand.setSeed(worldSeed)` → 取两个 `nextLong` 得 k/l →
+   `rand.setSeed(x*k + z*l ^ worldSeed)` → **紧接着** `ForgeEventFactory.onChunkPopulate(true,…)`。
+   即 `PopulateChunkEvent.Pre` 拿到的是**刚播种、尚未消耗**的 random。
+2. RC 的 `RCForgeEventHandler.onPreChunkDecoration` 把它交给 `WorldGenStructures.decorate`。
+3. `planStructuresInChunk` → `MixingStructureSelector.generatedStructures(random, biome, provider, distance)`：
+   对每个类别做 `nextDouble` 判定，命中后 `WeightedSelector.select` 再消耗 1 次 `nextDouble`。
+4. `planStructureInChunk` 用 `random.nextLong()` 作为结构 seed；
+   位置 = `randomSurfacePos(chunkPos, seed)` = `new Random(seed ^ 1298319823120938102L)`，
+   `chunk*16 + nextInt(16) + 8`（chunk 内偏移 ≤8 格）。
+
+**决定性细节**：RLTweaker 也监听 `PopulateChunkEvent.Pre`，并在 `RecurrentHandler$RCHandler`
+里完整复制了 RC 的 decorate 流程（`planStaticStructuresInChunk` + `planStructuresInChunk`），
+用的是**同一个 random**；RC 自己的 handler 随后也会跑一遍（predicate 为 null 时不查
+`checkedChunksFinal`），所以 random 可能被第二次消耗。
+
+### 19.4 实现（`locate/impl/ShivaxiLocator.java`，独立文件）
+两级：
+1. **记录型（精确）**：`RecurrentComplexData.snapshot(world)` 里的 `Shivaxi` 记录。
+   注意 RLTweaker 的 `RCCleanup` 会清空 RC 自己的 entries，所以必须依赖本项目已积累的
+   `<world>/rlcompass/rc_structures_<dim>.tsv`（`RecurrentComplexData` 早已实现）。
+2. **重放型（候选）**：遍历半径内 `defaultTemperature <= 0.3` 的 chunk，用**两个随机源**分别调用
+   RC 自己的 `generatedStructures`（反射，不重写算法）：
+   - 原版 populate random（`x*k + z*l ^ worldSeed`）
+   - RC 的 `chunkSeed`（`x*341873128712 + z*132897987541 + worldSeed`）
+
+   命中 `Shivaxi` 时用 `nextLong` 与 RC 的盐算 chunk 内偏移，得到候选坐标。
+   4 秒预算、结果缓存 10 分钟、按玩家 chunk 偏移复用。
+   记录型优先；16 格内的重复候选被丢弃。
+
+### 19.5 诚实边界（重要）
+用存档里两条真实记录做了端到端校验：
+- `RLCraft_UndergroundRuin3` @ bbox (2007,7,5025)、seed `-1632320231900912850`
+- `RLCraft_DecentWitch` @ bbox (2009,10,5028)、seed `8560641301804599608`
+
+对 chunk (125,314) 及 12×12 邻域，枚举了「类别顺序 120 × 出现类别 32 × 命中组合 32」
+共十余万种消耗序列，**没有任何一种能复现这两个 seed**。说明：
+- 这两个结构很可能来自旧 session（RLTweaker 每次加载清空 entries，dat 里只剩最近一次的新增），
+  或来自跨 chunk 的 `partially` 生成，其 seed 不对应"本 chunk 的一次 populate"；
+- 因此**重放路径未获得真值验证**，只能作为候选。记录型路径是唯一可担保精确的结果。
+
+若实机日志里 `[SHIVAXI]` 的候选经 tp 验证为假，优先怀疑 RLTweaker 与 RC 双份 handler 造成的
+random 二次消耗；届时应改为读取 `checkedChunks` 排除已判定区块，而不是继续调阈值。
+
+### 19.6 部署与验收
+BUILD SUCCESSFUL（9s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261104-224220`。
+
+验收：
+1. 选择界面出现 `Shivaxi (Sky City)`，维度标注「主世界」。
+2. 搜索后日志出现 `[SHIVAXI] replay scanned N snowy chunks, predicted M candidate(s) (X ms)`。
+3. 若 M=0，说明半径内没有候选（该结构期望约 1300 万 chunk 一个，属正常）。
+4. 若有候选，tp 到坐标后向下/向上找天空之城；**记录型**结果 source 为
+   `RecurrentComplexRecord`，**候选**为 `RecurrentComplexReplay`，两者可信度不同。
+
+### 19.7 未生成区块可用性与自检（2026-11-04 23:00）
+
+用户质疑："能不能在未生成区块搜索，否则就是空谈。"
+
+**技术上可以**：重放路径不读 region 文件、不加载 chunk。`World.getBiome(pos)` 对未加载区块走
+`WorldProvider.getBiomeProvider().getBiome(...)`（GenLayer 计算），不会生成地形；
+`generatedStructures` 只依赖 `StructureRegistry`（启动时已加载）、biome 和 provider。
+所以候选点可以在**从未生成过的区块**上算出来。
+
+**但准确性必须证明**，否则候选没有价值。新增 `/rlcompass rccheck`：
+- 遍历 `RecurrentComplexData.snapshot(world)` 里所有真实记录（跳过 vanilla 村庄部件）；
+- 对每条记录重放它所在 chunk；
+- 统计"重放能否再次规划出同名结构"，输出 `reproduced X/Y` 与 miss 列表。
+
+判定标准：
+- `X/Y` 接近 Y → 重放的 random 状态正确，未生成区块的候选可信；
+- `X/Y` 接近 0 → random 状态假设错误，**不要相信预测**，需改为读取 `checkedChunks` 并用
+  实测偏移校准。
+
+命令实现于 `CommandRLCompass` 的 `rccheck` 分支，逻辑在 `ShivaxiLocator.diagnose(World)`。
+BUILD SUCCESSFUL（11s），部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261104-225840`。
+
+## 20. 根因：RC 的类别迭代顺序是身份哈希，每次启动都不同（2026-11-05 凌晨）
+
+### 20.1 上一轮结果的解读
+`rccheck` 扩到 3×3 邻域后是 `3/24`，且两条命中都来自相邻 chunk（offset 0）：
+`P_LargeShip`、`BlazeSpawnerCrystal`。说明"规划 chunk ≠ 记录中心 chunk"确实存在，
+但只能解释少数记录。
+
+### 20.2 决定性发现：`ArrayListMultimap.create()` + 未重写 hashCode
+反编译 `StructureSelector.<init>`：`weightedStructureInfos = ArrayListMultimap.create()`，
+即 `HashMap<Category, ArrayList>` 支撑的 Multimap。而 `NaturalStructureSelector.Category`
+是接口，`SimpleCategory` **没有重写 `hashCode`/`equals`** → 使用 `Object` 的身份哈希。
+
+`MixingStructureSelector.generatedStructures` 的实际字节码：
+```java
+weightedStructureInfos.keySet().stream()
+    .flatMap(cat -> IntStream.range(0, structuresInBiome(cat, provider, biome, distance, random))
+                             .mapToObj(i -> selectOne(random, cat)))
+    .map(...)      // 每个计划项消耗一次 nextLong 作为 seed
+    .collect(toList());
+```
+顺序流，但 **keySet 的迭代顺序 = HashMap 桶顺序 = 身份哈希顺序**，每次 JVM 启动都不同。
+
+`SimpleCategory.structuresInBiome` 是
+`Arrays.stream(spawnChance(biome, provider)).filter(chance -> random.nextDouble() < chance * amountMultiplier * distanceMultiplier * modifier).count()`，
+`spawnChance` 默认长度为 1 → **每个类别消耗 1 次 `nextDouble`**。
+
+于是同一个 chunk 在不同会话里，第 i 次掷点会被拿去和**不同类别**的概率比较。
+RC 自身在旧区块上不会重算，所以玩家察觉不到；但这意味着 **RC 的 worldgen 跨会话不可复现**，
+也解释了为什么 24 条记录（跨越多个会话生成）只有 3 条能在当前会话的顺序下复现。
+
+### 20.3 修复：把顺序钉死
+`ShivaxiLocator.Replay.pinnedSelector` 在第一次拿到某个 (biome, dimension) 的 selector 后，
+把 `weightedStructureInfos` 换成一个 `LinkedHashMultimap`，键按 `CATEGORY_REGISTRY.id()` 排序
+（`adventure, decoration, frequent, rare, ultrarare`）。日志会打印：
+```
+[SHIVAXI] pinned RC category order: was [frequent decoration rare adventure ultrarare] now [...]
+```
+`CachedStructureSelectors.get` 是 `HashMap<Pair<dimension, biome>, selector>` 且 `isValid` 通过即复用，
+所以**RC 自己生成区块时用的就是这个被钉死的实例** —— 预测与实际生成从此一致，且跨会话稳定。
+
+顺带删除：`planChunk` 里"RC chunkSeed"那条备用随机源。`[RCPROBE]` 已用 6 个真实 chunk 证明
+`x*k + z*l ^ worldSeed` 与 RC 实际拿到的 `Random` 内部状态 **6/6 完全一致**，第二条源只会产生假阳性。
+
+### 20.4 rccheck 升级（用来证明上面的结论）
+`/rlcompass rccheck [count]`（默认最近 10 条）：
+1. **固定顺序**下在 ±4 chunk 窗口内找，命中则输出偏移 `(dx,dz)`；
+2. 仍未命中时，**枚举该 biome 的全部类别排列**（≤5 个类别 → ≤120 种），
+   逐个重放（临时替换 selector 的 map，`finally` 还原），看是否存在某种顺序能复现。
+
+输出：
+```
+[SHIVAXI] rccheck: pinned order reproduced X/10, Y more under another category order ...
+```
+判读：
+- `Y` 明显大于 0 → 旧记录来自钉死前，顺序假设成立，链路正确，预测可用；
+- `X≈10` → 钉死后的记录已能完全复现，直接可信；
+- `X≈0 且 Y≈0` → 链路仍有错，需要逐字节对 `selectOne` 的权重消耗。
+
+### 20.5 部署
+BUILD SUCCESSFUL（11s），jar 337918 B，已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-000700` / `20261105-000900`。
+
+### 20.6 待办
+- 用 `rccheck` 拿到 X/Y，确认链路；
+- 若确认，再实现"大范围深度扫描"：瓶颈是逐区块 biome 查询，需要 tick 分片 + 只对雪原 chunk
+  调 selector；按 `7.5e-6/雪原 chunk` 的期望，需要数百万 chunk 才有较大概率命中。
+
+## 21. 钉死顺序的实现 bug + 深度扫描（2026-11-05 下午）
+
+### 21.1 上一轮 `rccheck` 的结果是无效的
+```
+[SHIVAXI] rccheck: pinned order reproduced 2/10, 0 more under another category order
+             offsets: [(0,-1) (-2,-2)]      order indexes: []
+```
+`order indexes: []` 说明**排列验证一次都没跑**，而且日志里没有 `pinned RC category order`
+那一行——钉死根本没执行。根因是我自己写的：
+```java
+Reflect.findField(selectorCache.getClass(), "weightedStructureInfos")   // 错
+```
+`selectorCache` 的类型是 `CachedStructureSelectors`，该字段声明在 `StructureSelector` 上，
+所以 `findField` 返回 null，`pin()` 直接 return，`categoryOrders()` 返回空表。
+`2/10` 只是"邻域放宽到 ±4"带来的改进，与顺序假设无关。
+
+修复：改为对 `StructureSelector` 取字段；并在字段缺失时打一次性 WARN，避免再次静默失效。
+
+### 21.2 其余参数已逐条核对（`WorldGenStructures.planStructuresInChunk` 字节码）
+```java
+distance = distance(new ChunkPos(world.getSpawnPoint()), chunkPos)   // √(dx²+dz²)，区块单位
+selector.generatedStructures(random,
+        world.getBiome(chunkPos.getBlockPos(0,0,0)),                 // chunk 原点，y=0
+        world.provider, distance)
+list.stream().filter(predicate).forEach(pair -> planStructureInChunk(...))  // 每个元素一次 nextLong
+```
+本项目的实现与之一致：参考点 = 世界出生点所在 chunk、距离用区块单位、biome 取 chunk 原点。
+
+### 21.3 深度扫描 `/rlcompass shivaxi [radiusChunks|cancel]`
+一般搜索只有 200 格半径，而 Shivaxi 的期望约 `7.5e-6 / 雪原chunk`，必须扫几百万 chunk。
+新增 tick 分片扫描：
+- 从玩家所在 chunk 起，**由近到远按环**遍历（ring 0,1,2…，先近后远）；
+- 每 tick 只花约 2 ms（`TICK_BUDGET_NANOS`），游戏不卡；
+- 先查 biome（`BiomeDictionary.Type.SNOWY` 或 `temperature <= 0.3`），非雪原直接跳过；
+- 只对雪原 chunk 调 `planChunk`（反射 RC 自己的选择器，顺序已钉死）；
+- 命中 Shivaxi 时用 `seed ^ 1298319823120938102` 算 chunk 内偏移（RC 的 `randomSurfacePos`），
+  打印候选坐标并计数；
+- 每 25 万 chunk 打一条进度；结束/取消时输出汇总。
+`Ticker` 注册在 `MinecraftForge.EVENT_BUS`——已用字节码确认
+`FMLCommonHandler.eventBus = MinecraftForge.EVENT_BUS`，`ServerTickEvent` 就发在这里。
+
+### 21.4 必须说清的边界
+- 扫描预测的是**"RC 会在这里选中 Shivaxi"**，不是"这里一定有城"。
+  `Shivaxi.rcst` 的 `placer.requiredConformity = 0.9914`，实际放置还要通过方块一致性检查，
+  未生成区块无法预判，因此候选点可能去了只有空地。
+- 默认半径 1200 chunk（约 5.76M chunk、6 分钟量级），期望约 2 个候选；
+  半径 3000 chunk 约 3700 万 chunk、半小时量级。
+- 观察 `[SHIVAXI] deep scan progress` 里的吞吐量，若每 tick 过重可下调 `TICK_BUDGET_NANOS`。
+
+### 21.5 部署
+BUILD SUCCESSFUL（12–14s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-132849` / `133038` / `133108`。
+
+## 22. 第一次有效测量后的四项修复（2026-11-05 下午）
+
+上一轮 `rccheck` 终于有效：`pinned order reproduced 3/10, 6 more under another category order`，
+`order indexes: [2 1 1 1 2 1]`。9/10 在某种顺序下可复现，说明随机链路正确，
+差别只在类别顺序——而顺序逐会话不同已由 §20 证明。用户同时指出四个问题，逐条修：
+
+### 22.1 `CATEGORY_REGISTRY` 又取错了类（钉死顺序仍不稳定）
+日志里 `was [...SimpleCategory@30c5e122 ...]` 说明 `categoryName()` 回退到了身份哈希字符串。
+原因：`CATEGORY_REGISTRY` 声明在 `NaturalStructureSelector` 上，而代码从
+`NaturalGeneration` 读 → 拿到 null → 名字退化为 `Object.toString()`。
+排序键是身份哈希串，等于**每次启动顺序仍然不同**（同会话内一致，所以预测仍能用，
+但跨会话不稳定，`was/now` 也无法阅读）。
+修复：改从 `NaturalStructureSelector` 读；名字恢复为 `adventure / decoration / frequent /
+rare / ultrarare`，排序真正稳定。
+
+### 22.2 pin 日志刷屏
+每个 (biome, dimension) 都有一个 selector，各自钉死一次并打一行，本次会话共 26 行。
+改为按"排序后签名"去重（`LOGGED_ORDERS`），同一顺序只打一次。
+
+### 22.3 深度扫描太慢：54 µs/chunk
+实测 250154 chunk / 339 s。瓶颈是 `world.getBiome`：`BiomeCache` 只有 256 项，
+环形遍历几乎每次都是 miss，每次都要重算 16×16 的整条 GenLayer 链。
+改为**瓦片批量采样**：每 16×16 chunk（256×256 方块）调一次
+`BiomeProvider.getBiomes(buf, x, z, 256, 256, false)`，把 GenLayer 链摊到 256 个 chunk 上；
+同时按 biome 缓存 selector（`selectorByBiome`）与 snow 判定（`SNOWY_CACHE`），
+把热路径上的反射调用从每 chunk 一次降到每 biome 一次。
+tick 预算 2 ms → 4 ms。
+
+### 22.4 `structuredata.dat` 的 EOFException
+文件本身没坏：gzip 有效、解压 359 B、`data.entries` 是空列表（RLTweaker 清空 RC 记录）。
+那次 EOF 是**上个会话崩溃留下的半写文件**，本会话保存后已恢复。
+真正持久的数据是本项目的 `rlcompass/rc_structures_<dim>.tsv`（39 条都在里面）。
+日志改为明确说明"从 TSV 继续、没有记录丢失"，并把 `structures known` 的措辞改成
+"from the on-disk TSV cache + from RC's save file"，避免误读成"内存缓存、随时会丢"。
+
+### 22.5 关于"多顺序尝试"和"±3 chunk 容差"
+- **不需要多顺序**：钉死的是 RC 缓存的**同一个 selector 实例**，RC 生成新区块时用的就是它，
+  所以钉死顺序 = 实际顺序，是构造上保证的，不是概率。
+  `6 more under another order` 全部来自钉死之前生成的旧记录。
+- **偏移**：记录的是结构包围盒中心，规划它的是另一个 chunk，实测最多差 3 chunk（48 格）。
+  深度扫描的候选日志已注明"look within ~48 blocks"。
+
+### 22.6 部署
+BUILD SUCCESSFUL（10–13s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-143411` / `143505`。
+
+## 23. 深度扫描改为聊天框播报 + 有效样本口径（2026-11-05 下午）
+
+### 23.1 实测确认（本轮日志）
+- 钉死顺序已用真实类别名：`was [adventure decoration rare frequent] → now [adventure decoration frequent rare]`。
+- `rccheck`：`pinned 4/10, 5 more under another order`，**9/9 自然记录全部可复现**，
+  仅 `StonePlantMound3@{100,256}` 仍 miss。
+- 深度扫描 `radius 400`：641601 chunk / 33 s = **19,443 chunk/s**，比修复前的 738 chunk/s 快 **26 倍**。
+
+### 23.2 聊天框播报（用户要求，免去翻日志）
+新增 `Tell` 通道，`startDeepScan` 现在接收发起命令的 `EntityPlayerMP`：
+- 开始：`rlcompass.shivaxi.started`
+- 进度：每 **100 万** chunk 一条（日志仍是 25 万）
+- 候选：命中即播报 `区块 (x,z)，约 (X,Z)，48 格范围内找`
+- 结束/取消：汇总（区块数 / 有效数 / 候选数 / 耗时）
+- 启动时用 `lookupStructure(registry, "Shivaxi")` 检查注册表，缺失则直接警告
+  `rlcompass.shivaxi.notRegistered`——避免白等五分钟。
+发送失败（玩家已退出）静默忽略。
+
+### 23.3 分母口径修正：从"温度雪原"改成"真的有 ultrarare 类别"
+原来用 `temperature <= 0.3` 统计 snowy，把针叶林也算进去，radius 400 得到 83110/641601 = 13%，
+明显偏高，会让期望值虚高。改为：
+```java
+if (!replay.hasUltraRare(biome)) continue;   // selector 的 keySet 里有 ultrarare 才算
+```
+RC 只有当某类别的至少一个结构匹配该 biome 时才会把类别放进 selector，所以
+`hasUltraRare` 精确等于"这里有可能刷 Shivaxi"，这才是有效分母（按 biome 缓存，顺带省掉无谓的
+`planChunk` 调用）。
+
+### 23.4 关于"候选判定是否太严"
+代码里**没有任何额外的雪层高度、最小间距、群系组合阈值**。唯一的判定就是
+RC 自己的 `generatedStructures`：类别概率 + 权重选择。所以 0 候选只可能是概率，
+不是我们加的条件。期望值：
+```
+候选数 ≈ 有效chunk × 1.5e-4 × min(totalWeight/20, 1) / 类别条目数
+       = 有效chunk × 1.5e-4 × 0.15 / 3 = 有效chunk × 7.5e-6
+```
+radius 400 若有效 chunk 只有 4 万，期望 0.3，出现 0 的概率约 74%——完全正常。
+radius 1200 约 577 万 chunk，若有效率 8% → 46 万有效 → 期望 3.4 个候选。
+
+### 23.5 部署
+BUILD SUCCESSFUL（11s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-150523` / `150620`。
+
+## 24. Shivaxi 实测成功：4 个候选，第 4 个找到（2026-11-05 15:20）
+
+### 24.1 实际结果
+```
+[SHIVAXI] deep scan finished: 5764801 chunks, 345509 snowy, 4 candidate(s) in 294 s
+   (17962,14208)  (18388,5739)  (9371,-12568)  (10737,-14264)
+```
+玩家逐个传送验证：**前 3 个是空地，第 4 个 `(10737,-14264)` 是真城**。
+扫描半径 1200 chunk（19200 格），耗时 294 秒 ≈ 19,600 chunk/s。
+
+### 24.2 这一步验证了什么
+| 项目 | 期望 | 实测 | 结论 |
+|---|---|---|---|
+| 候选数量 | 345509 × 7.5e-6 = **2.59** | **4** | Poisson `P(X≥4)=0.26`，正常 |
+| 放置成功率 | 资料称"失败率约 80%" | **1/4 成功 = 25%** | 与 `requiredConformity=0.9914` 吻合 |
+| 定位精度 | 预测点附近 | 第 4 个命中 | 选择层完全正确 |
+
+**选择层（worldSeed → chunk random → 类别顺序 → 权重选择 → seed → 坐标）已经端到端验证通过**，
+包括之前修的：
+- `PopulateChunkEvent.Pre` 的 random 公式（探针 6/6 逐位比对）；
+- 类别顺序钉死（真实类别名 + 跨会话稳定）；
+- 1.12.2 的 12 位方块 ID（`Add` 数组）；
+- 记录中心 vs 规划 chunk 的 ≤3 chunk 偏移（候选日志提示 ±48 格）。
+
+剩下的失败**全部来自 RC 自己的放置检查**（`placer.requiredConformity = 0.9914` + 地形），
+未生成区块无法预判，这是原理边界，不是实现缺陷。
+
+### 24.3 候选距离（玩家当时在区块 (111,278)）
+```
+(18388,  5739)  16662 格
+(17962, 14208)  18901 格
+( 9371,-12568)  18634 格
+(10737,-14264)  20747 格   ← 找到的那座
+```
+即：**半径 1200 chunk 的一圈大约产出 1 座真城**，最近也要飞 1.6 万格。
+这与"约 1300 万 chunk 一座"的量级一致（半径 1200 的圆面积约 450 万 chunk）。
+
+### 24.4 新增：候选自动记入缓存仓库
+三个失败候选不应在下次扫描时重复推荐，所以命中的同时写进 `SearchMemory`：
+```java
+SearchMemory.get(deepWorld).remember(STRUCTURE_ID, candidate);
+```
+仓库里会以 `rlcompass:shivaxi` + 坐标出现，玩家可把失败点标成"未找到"、成功的标成"已找到"，
+之后 `ItemExplorersCompass` / 再次扫描都会跳过已记录点。
+聊天提示同步改为"48 格范围内找；已记入缓存仓库"。
+
+### 24.5 部署
+BUILD SUCCESSFUL（15s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-152615`。
+
+## 25. 提高精度：用 RC 自己的 placer 做"纯试算"（2026-11-05 下午）
+
+### 25.1 精度还差在哪
+第一次实测 4 个候选只有 1 个是真城。选择层（worldSeed → random → 类别顺序 → 权重 → seed → 坐标）
+已经逐位验证，剩下的 3 个失败全部来自 RC 的放置检查：
+`Shivaxi.rcst` 的 `generationInfo.placer` 里 `FactorMatch.requiredConformity = 0.9914`，
+RC 会在放置前比对结构方块与目标地形的一致率，不达标就整座放弃。
+
+**要判断这一点必须知道地形**，而未生成区块没有地形数据——所以"更精准"无法靠纯算术完成，
+必须让 RC 自己去算一次。
+
+### 25.2 找到的入口：`StructureGenerator.boundingBox()` 是纯试算
+`ivorius.reccomplex.world.gen.feature.StructureGenerator`：
+```java
+public Optional<StructureBoundingBox> boundingBox();      // -> boundingBox(true)
+protected Optional<StructureBoundingBox> boundingBox(boolean);
+```
+`boundingBox(boolean)` 的内部（字节码）：
+```java
+bb = Structures.boundingBox(surfacePos.blockPos(0), structureSize())
+if (placer != null) {
+    int result = placer.place(place(), structure().blockCollection());
+    if (result < 0) return Optional.empty();      // DONT_GENERATE
+    bb.minY += result;
+}
+```
+- `place()` 只用 `seed() ^ 1923419028309182309L` 造 Random，再取 `environment()` /
+  `transform()` / `surfaceBoundingBox()`；三者都是惰性派生（`transform()` 由
+  `seed ^ 1283901823092812394L` 决定），**不需要外部状态**。
+- `environment()` 惰性调 `Environment.inNature(world, surfaceBoundingBox(), generationType)`。
+- placer 读方块走 `IvToolkit WorldCache.getBlockState → world.getBlockState(...)`，
+  未加载的区块会被正常生成，**但不会放置任何方块**。
+
+构造方式直接照抄 `WorldGenStructures.planStructureInChunk`：
+```java
+new StructureGenerator(structure).world(worldServer).generationInfo(naturalGeneration)
+    .seed(seed).maturity(SUGGEST)
+    .randomPosition(new BlockSurfacePos(x, z), naturalGeneration.placer)
+    .fromCenter(true).partially(true, chunkPos)
+```
+本实现只需要 `boundingBox()`，因此省略 `maturity` / `partially`。
+
+### 25.3 实现
+`ShivaxiLocator.Replay.wouldPlace(Planned, x, z)`：
+1. 从 `Planned` 拿到 `structure` 与 `naturalGeneration`（在 `planChunkWith` 里为命中项保留）；
+2. 反射构造 `StructureGenerator`，依次设置 structure / world / generationInfo / seed /
+   randomPosition / fromCenter；
+3. 调 `boundingBox()`；返回 `Optional.empty()` 即判定"放不下"；
+4. **任何异常或反射失败都返回 true**（不可验证时宁可保留候选，绝不误杀）。
+
+扫描里命中后先试算，被拒的计入 `deepRejected`、坐标收进 `DEEP_REJECTED`，
+**并在结束时把坐标一起发到聊天框**（"已排除 N 个地形不符的位置：…"），
+这样即使试算本身有偏差，坐标也不会丢。
+
+### 25.4 代价
+试算会读取结构包围盒范围内的方块。Shivaxi 尺寸 68×129×85，footprint 约 5×6 个区块，
+每个候选会把这些区块生成出来（约 1–2 秒）。对 4–10 个候选来说可以接受，
+但它确实**会提前生成那片地形的区块**——只是不放方块、不记录结构。
+
+### 25.5 待实测
+需要一次 `/rlcompass shivaxi 1200` 验证：期望结果是
+`候选 1`（真城）+ `已排除 3 个地形不符的位置`。
+若出现"全部被排除"或"排除数为 0"，说明试算参数不对，需要对照
+`planStructureInChunk` 补齐 `maturity`/`partially`。
+
+### 25.6 部署
+BUILD SUCCESSFUL（12–17s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-153523` / `153628`。
+
+## 26. 试算精度接入指南针 + GUI 搜索半径（2026-11-05 下午）
+
+实机确认：`shivaxi 1200` 出 2 个候选，**两个都是真城**；被排除的坐标玩家逐个去看过，确实没有。
+放置试算（§25）成立，于是把它接进指南针。
+
+### 26.1 指南针搜索也做放置试算
+`Replay.scanChunk` 命中后先调 `wouldPlace(planned, x, z)`，被拒的只记日志、不进结果。
+指南针不会再指向 RC 拒绝生成的位置。
+
+### 26.2 普通搜索改成"瓦片批量 + 由近到远"
+原来 `scan` 是逐 chunk `world.getBiome`（54 µs/chunk），大半径下根本扫不动。
+改为与深度扫描共用瓦片采样：
+- 每 16×16 chunk 调一次 `BiomeProvider.getBiomes(..., 256, 256, false)`；
+- 以玩家所在 chunk 为圆心**按 tile 环向外**走，预算用完时覆盖的是离玩家最近的地面，
+  而不是方形区域的某个角；
+- 预算 `MAX_MILLIS` 4 s → **8 s**（试算会生成结构范围内的区块，需要余量）。
+实测吞吐约 245k chunk/CPU-秒 → 8 s 可覆盖约 190 万 chunk（半径约 690 chunk / 11000 格）。
+
+### 26.3 深度扫描结果直接供指南针使用
+`hits()` 在 RC 记录之后、重放之前，先把 `DEEP_HITS` 加进候选。
+所以跑过一次 `/rlcompass shivaxi 1200` 之后，指南针搜 `Shivaxi` 是**瞬时**返回
+已验证候选，不会把同样六百万 chunk 再扫一遍。去重逻辑（16 格内视为同一处）保证不会重复。
+
+### 26.4 GUI：搜索半径滑条
+新增 `client/gui/RadiusSlider`（自绘扁平控件，非 `GuiButton`：
+拖动需要 `mouseClickMove`/`mouseReleased`，由 `GuiStructureSelect` 转发）。
+- 位置：左侧动作列 y=115，宽 110、高 20，范围 **100–20000 格，步长 100**；
+- 条内显示当前值（`gui.rlcompass.radiusValue`），已填充部分用半透明白表示比例；
+- 松开鼠标才写配置：`CompassConfig.searchRadius = value` 然后
+  `ConfigManager.sync(RLCompassMod.MODID, Config.Type.INSTANCE)`，
+  即**自动改写 `config/rlcompass.cfg`**（拖动过程中不写盘，避免每像素一次 IO）。
+- 单机下客户端与服务端共用同一静态字段，改完立刻对搜索生效。
+
+### 26.5 GUI：特殊建筑提示
+- 滑条下方常驻一行：`半径越大，搜索越久`；
+- 当选中 `rlcompass:shivaxi`（新增 `StructureNameUtil.isUltraRare`）时追加：
+  `超稀有结构：建议半径 20000，搜索可能需要数分钟`。
+文案用 `listFormattedStringToWidth` 按 110 px 折行，不会溢出动作列。
+
+### 26.6 已知边界
+- 8 秒预算只能覆盖约 11000 格半径；设成 20000 时搜索是**由近到远的部分覆盖**，
+  日志会写 `search stopped at the 8000 ms budget`。要完整覆盖用 `/rlcompass shivaxi`。
+- 半径滑条写的是客户端配置；**专用服务器**上客户端改不到服务端的 `rlcompass.cfg`，
+  需要服务端自行修改（单机不受影响）。
+
+### 26.7 部署
+BUILD SUCCESSFUL（11–13s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-155901` / `155951`。

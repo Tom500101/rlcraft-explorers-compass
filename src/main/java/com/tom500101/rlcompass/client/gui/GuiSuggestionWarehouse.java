@@ -3,6 +3,7 @@ package com.tom500101.rlcompass.client.gui;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
@@ -22,32 +23,44 @@ import org.lwjgl.opengl.GL11;
 import com.tom500101.rlcompass.cache.SearchMemory;
 
 /**
- * The suggestion warehouse: everything the compass has ever offered, with its state.
+ * The cache warehouse: every answer the compass has ever given, with its state.
  *
- * <p>Suggestions are cheap and unreliable by nature (they answer "this area can host it, you have
- * not checked"), so the player decides what a point turned out to be. Clicking the state cell opens
- * a three-item menu — NEW / FOUND / MISSING — instead of cycling through values, because a mis-click
- * on a cycle silently skips a state. A settled row is never offered again, which is what makes the
- * next search return somewhere new.
+ * <p>Layout follows the picker exactly — a 110px action column on the left, the list starting at
+ * x=130, a 150x20 filter box at the head of the list column — so the two screens feel like one.
+ * Each row is split into fixed columns (name, coordinates, state, delete) instead of right-aligning
+ * a second string, which is what made the old row's text overlap when a name was long.
  *
- * <p>Same flat list as the picker: one 0x7F surface over the dimmed world, selection stacks the
- * surface again, 6px scrollbar, no row borders or separators.
+ * <p>Behaviour:
+ * <ul>
+ *   <li><b>Create</b> — every search writes its answer here automatically.</li>
+ *   <li><b>Read</b> — the filter box narrows by structure name or coordinates.</li>
+ *   <li><b>Update</b> — clicking the state cell opens the three-item menu (new / found / missing).
+ *       A row's position and id are never editable: they are facts about the world.</li>
+ *   <li><b>Delete</b> — the x cell forgets the row, which makes that spot searchable again.</li>
+ * </ul>
  *
  * <p>Single-player only: the warehouse lives in the save directory, which the integrated server
- * exposes but a remote server does not. On a remote world the list is empty.
+ * exposes but a remote server does not.
  */
 @SideOnly(Side.CLIENT)
 public class GuiSuggestionWarehouse extends GuiScreen {
 
-    private static final int AGAIN_BUTTON_ID = 0;
     private static final int DONE_BUTTON_ID = 1;
 
-    private static final int LIST_LEFT = 10;
+    // Same geometry as GuiStructureSelect, on purpose.
+    private static final int LEFT_X = 10;
+    private static final int LEFT_WIDTH = 110;
+    private static final int LIST_LEFT = 130;
     private static final int LIST_TOP = 40;
     private static final int EDGE = 10;
-    private static final int ROW_HEIGHT = 20;
-    private static final int STATE_WIDTH = 76;
-    private static final int MENU_ROW_HEIGHT = 13;
+    private static final int BUTTON_HEIGHT = 20;
+    private static final int SEARCH_BOX_WIDTH = 150;
+
+    private static final int ROW_HEIGHT = 28;
+    private static final int STATUS_WIDTH = 66;
+    private static final int DELETE_WIDTH = 16;
+    private static final int CELL_HEIGHT = 16;
+    private static final int MENU_ROW_HEIGHT = 14;
 
     private static final SearchMemory.State[] STATES = {
             SearchMemory.State.NEW, SearchMemory.State.FOUND, SearchMemory.State.MISSING
@@ -59,10 +72,10 @@ public class GuiSuggestionWarehouse extends GuiScreen {
     private final List<SearchMemory.Entry> entries = new ArrayList<SearchMemory.Entry>();
 
     private ListSlot list;
-    private TransparentButton againButton;
+    private TransparentEditBox searchBox;
     private SearchMemory memory;
+    private String lastFilter = "";
 
-    private int selected = -1;
     private int menuRow = -1;
     private int menuLeft;
     private int menuTop;
@@ -74,22 +87,22 @@ public class GuiSuggestionWarehouse extends GuiScreen {
     @Override
     public void initGui() {
         buttonList.clear();
-        entries.clear();
         memory = memory();
-        if (memory != null) {
-            entries.addAll(memory.sortedEntries());
-        }
-        selected = -1;
+
+        buttonList.add(new TransparentButton(DONE_BUTTON_ID, LEFT_X, height - 30, LEFT_WIDTH,
+                BUTTON_HEIGHT, I18n.format("gui.done")));
+
+        searchBox = new TransparentEditBox(0, fontRenderer, LIST_LEFT, 10, SEARCH_BOX_WIDTH,
+                BUTTON_HEIGHT);
+        searchBox.setEnableBackgroundDrawing(false);
+        searchBox.setCanLoseFocus(false);
+        searchBox.setFocused(true);
+        searchBox.setMaxStringLength(64);
+        searchBox.setText(lastFilter);
+
+        list = new ListSlot(mc, LIST_LEFT, width - EDGE, LIST_TOP, height - EDGE, ROW_HEIGHT);
         menuRow = -1;
-
-        list = new ListSlot(mc, LIST_LEFT, width - EDGE, LIST_TOP, height - 44, ROW_HEIGHT);
-
-        againButton = new TransparentButton(AGAIN_BUTTON_ID, width / 2 - 154, height - 32, 150, 20,
-                I18n.format("gui.rlcompass.warehouse.searchAgain"));
-        againButton.enabled = false;
-        buttonList.add(againButton);
-        buttonList.add(new TransparentButton(DONE_BUTTON_ID, width / 2 + 4, height - 32, 150, 20,
-                I18n.format("gui.done")));
+        reloadEntries();
     }
 
     /** The integrated server's save directory; {@code null} on a remote world. */
@@ -110,25 +123,39 @@ public class GuiSuggestionWarehouse extends GuiScreen {
     protected void actionPerformed(GuiButton button) throws IOException {
         if (button.id == DONE_BUTTON_ID) {
             mc.displayGuiScreen(parent);
-        } else if (button.id == AGAIN_BUTTON_ID) {
-            if (selected >= 0 && selected < entries.size()) {
-                SearchMemory.Entry entry = entries.get(selected);
-                // Settle the old point first: the whole point of the warehouse is to move on.
-                if (memory != null) {
-                    memory.setState(entry.structureId, entry.pos, SearchMemory.State.MISSING);
-                }
-                searchAgain(entry.structureId);
+        }
+    }
+
+    @Override
+    public void updateScreen() {
+        searchBox.updateCursorCounter();
+        if (!searchBox.getText().equals(lastFilter)) {
+            lastFilter = searchBox.getText();
+            reloadEntries();
+        }
+    }
+
+    /** Rebuilds the visible rows from the filter box. */
+    private void reloadEntries() {
+        entries.clear();
+        if (memory == null) {
+            return;
+        }
+        String filter = searchBox == null ? "" : searchBox.getText().trim().toLowerCase(Locale.ROOT);
+        for (SearchMemory.Entry entry : memory.sortedEntries()) {
+            if (filter.isEmpty() || matches(entry, filter)) {
+                entries.add(entry);
             }
         }
     }
 
-    private void searchAgain(String structureId) {
-        String parentId = "reccomplex:structure";
-        String variantId = parentId + "/" + structureId;
-        com.tom500101.rlcompass.client.ClientSearchStatus.begin();
-        com.tom500101.rlcompass.network.PacketHandler.channel().sendToServer(
-                new com.tom500101.rlcompass.network.PacketSearchRequest(parentId, variantId));
-        mc.displayGuiScreen(null);
+    private static boolean matches(SearchMemory.Entry entry, String filter) {
+        if (entry.structureId.toLowerCase(Locale.ROOT).contains(filter)) {
+            return true;
+        }
+        String coords = entry.pos.getX() + " " + entry.pos.getZ();
+        return coords.contains(filter) || ("(" + entry.pos.getX() + ", " + entry.pos.getZ() + ")")
+                .contains(filter);
     }
 
     @Override
@@ -136,30 +163,83 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         drawDefaultBackground();
 
         if (entries.isEmpty()) {
-            drawCenteredString(fontRenderer, I18n.format("gui.rlcompass.warehouse.empty"),
-                    width / 2, LIST_TOP + 30, GuiTheme.TEXT_INFO);
+            String message = memory == null || memory.isEmpty()
+                    ? I18n.format("gui.rlcompass.warehouse.empty")
+                    : I18n.format("gui.rlcompass.noMatch");
+            drawCenteredString(fontRenderer, message,
+                    LIST_LEFT + (width - EDGE - LIST_LEFT) / 2, LIST_TOP + 30, GuiTheme.TEXT_INFO);
         } else {
             list.drawScreen(mouseX, mouseY, partialTicks);
         }
+
         drawCenteredString(fontRenderer, I18n.format("gui.rlcompass.warehouse.title"),
-                width / 2, 15, GuiTheme.TEXT);
+                LEFT_X + LEFT_WIDTH / 2, 15, GuiTheme.TEXT);
 
         drawMenu(mouseX, mouseY);
+
+        searchBox.drawTextBox();
+        if (searchBox.getText().isEmpty()) {
+            fontRenderer.drawString(I18n.format("gui.rlcompass.warehouse.filter"),
+                    searchBox.x + 4, searchBox.y + 6, GuiTheme.TEXT_HINT);
+        }
         super.drawScreen(mouseX, mouseY, partialTicks);
+    }
+
+    @Override
+    protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
+        if (menuRow >= 0) {
+            if (mouseButton == 0) {
+                int index = menuIndexAt(mouseX, mouseY);
+                if (index >= 0) {
+                    setState(menuRow, STATES[index]);
+                }
+            }
+            menuRow = -1;
+            return;
+        }
+        if (mouseButton == 0 && list.handleClick(mouseX, mouseY)) {
+            return;
+        }
+        super.mouseClicked(mouseX, mouseY, mouseButton);
+        searchBox.mouseClicked(mouseX, mouseY, mouseButton);
+    }
+
+    @Override
+    protected void keyTyped(char typedChar, int keyCode) throws IOException {
+        if (searchBox.textboxKeyTyped(typedChar, keyCode)) {
+            lastFilter = searchBox.getText();
+            reloadEntries();
+            return;
+        }
+        if (keyCode == 1) {
+            mc.displayGuiScreen(parent);
+            return;
+        }
+        super.keyTyped(typedChar, keyCode);
+    }
+
+    @Override
+    public void handleMouseInput() throws IOException {
+        int wheel = Mouse.getEventDWheel();
+        if (wheel != 0) {
+            menuRow = -1;
+            list.scroll(wheel);
+        }
+        // The base class dispatches mouse-button events to mouseClicked (buttons + list routing).
+        super.handleMouseInput();
     }
 
     // ------------------------------------------------------------------ state menu
 
-    /** Opens the three-item state menu under the clicked row (above it near the bottom edge). */
     private void openMenu(int row) {
         if (row < 0 || row >= entries.size()) {
             return;
         }
         menuRow = row;
-        menuLeft = width - EDGE - STATE_WIDTH;
+        menuLeft = list.statusLeft();
         int rowTop = list.rowTop(row);
         int menuHeight = STATES.length * MENU_ROW_HEIGHT;
-        menuTop = rowTop + ROW_HEIGHT;
+        menuTop = rowTop + CELL_HEIGHT + 4;
         if (menuTop + menuHeight > height - 4) {
             menuTop = Math.max(4, rowTop - menuHeight);
         }
@@ -169,7 +249,7 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         if (menuRow < 0) {
             return -1;
         }
-        if (mouseX < menuLeft || mouseX >= menuLeft + STATE_WIDTH) {
+        if (mouseX < menuLeft || mouseX >= menuLeft + STATUS_WIDTH) {
             return -1;
         }
         int offset = mouseY - menuTop;
@@ -184,42 +264,21 @@ public class GuiSuggestionWarehouse extends GuiScreen {
             return;
         }
         int menuHeight = STATES.length * MENU_ROW_HEIGHT;
-        Gui.drawRect(menuLeft, menuTop, menuLeft + STATE_WIDTH, menuTop + menuHeight,
+        Gui.drawRect(menuLeft, menuTop, menuLeft + STATUS_WIDTH, menuTop + menuHeight,
                 GuiTheme.MENU_BACKGROUND);
-        GuiTheme.outline(menuLeft, menuTop, menuLeft + STATE_WIDTH, menuTop + menuHeight,
+        GuiTheme.outline(menuLeft, menuTop, menuLeft + STATUS_WIDTH, menuTop + menuHeight,
                 GuiTheme.MENU_BORDER);
 
         for (int i = 0; i < STATES.length; i++) {
             int itemTop = menuTop + i * MENU_ROW_HEIGHT;
-            if (mouseX >= menuLeft && mouseX < menuLeft + STATE_WIDTH
+            if (mouseX >= menuLeft && mouseX < menuLeft + STATUS_WIDTH
                     && mouseY >= itemTop && mouseY < itemTop + MENU_ROW_HEIGHT) {
-                Gui.drawRect(menuLeft + 1, itemTop, menuLeft + STATE_WIDTH - 1,
+                Gui.drawRect(menuLeft + 1, itemTop, menuLeft + STATUS_WIDTH - 1,
                         itemTop + MENU_ROW_HEIGHT, GuiTheme.MENU_HOVER);
             }
             drawCenteredString(fontRenderer, stateLabel(STATES[i]),
-                    menuLeft + STATE_WIDTH / 2, itemTop + 3, STATE_COLORS[i]);
+                    menuLeft + STATUS_WIDTH / 2, itemTop + 3, STATE_COLORS[i]);
         }
-    }
-
-    @Override
-    protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
-        if (menuRow >= 0) {
-            if (mouseButton == 0) {
-                int index = menuIndexAt(mouseX, mouseY);
-                if (index >= 0) {
-                    setState(menuRow, STATES[index]);
-                }
-            }
-            // A click anywhere else just dismisses the menu; it never falls through to the row.
-            menuRow = -1;
-            return;
-        }
-        // The list does not process clicks itself (its handleMouseInput is wheel-only), so the
-        // screen routes them: rows first, then the bottom buttons.
-        if (mouseButton == 0 && list.clickAt(mouseX, mouseY)) {
-            return;
-        }
-        super.mouseClicked(mouseX, mouseY, mouseButton);
     }
 
     private void setState(int row, SearchMemory.State state) {
@@ -228,18 +287,16 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         }
         SearchMemory.Entry entry = entries.get(row);
         memory.setState(entry.structureId, entry.pos, state);
-        initGui();
+        reloadEntries();
     }
 
-    @Override
-    public void handleMouseInput() throws IOException {
-        int wheel = Mouse.getEventDWheel();
-        if (wheel == 0) {
+    private void delete(int row) {
+        if (memory == null || row < 0 || row >= entries.size()) {
             return;
         }
-        // Scrolling dismisses the menu: it is anchored to a row that is about to move.
-        menuRow = -1;
-        list.scroll(wheel);
+        SearchMemory.Entry entry = entries.get(row);
+        memory.remove(entry.structureId, entry.pos);
+        reloadEntries();
     }
 
     private static String stateLabel(SearchMemory.State state) {
@@ -253,8 +310,26 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         }
     }
 
+    private static int stateIndex(SearchMemory.State state) {
+        switch (state) {
+            case FOUND:
+                return 1;
+            case MISSING:
+                return 2;
+            default:
+                return 0;
+        }
+    }
+
+    @Override
+    public boolean doesGuiPauseGame() {
+        return false;
+    }
+
     /** Flat list: one surface, selection stacks it again, 6px scrollbar, no row chrome. */
     private final class ListSlot extends GuiSlot {
+
+        private int selected = -1;
 
         ListSlot(Minecraft mc, int left, int right, int top, int bottom, int slotHeight) {
             super(mc, Math.max(1, right - left), Math.max(1, bottom - top), top, bottom, slotHeight);
@@ -267,9 +342,16 @@ public class GuiSuggestionWarehouse extends GuiScreen {
             bindAmountScrolled();
         }
 
-        /** Screen y of a row, including the current scroll offset (GuiSlot has no such accessor). */
         int rowTop(int index) {
             return this.top - (int) this.amountScrolled + index * this.slotHeight;
+        }
+
+        int deleteLeft() {
+            return this.right - 2 - DELETE_WIDTH;
+        }
+
+        int statusLeft() {
+            return deleteLeft() - 4 - STATUS_WIDTH;
         }
 
         @Override
@@ -319,33 +401,46 @@ public class GuiSuggestionWarehouse extends GuiScreen {
                         GuiTheme.SELECTION_LAYER);
             }
 
-            int cellRight = this.right - EDGE;
-            int cellLeft = cellRight - STATE_WIDTH;
-            String coordinates = "(" + entry.pos.getX() + ", " + entry.pos.getZ() + ")";
-            String id = trim(entry.structureId, cellLeft - 8 - (this.left + 8));
-            this.mc.fontRenderer.drawStringWithShadow(id, this.left + 8, yPos + 6, GuiTheme.TEXT);
-            this.mc.fontRenderer.drawStringWithShadow(coordinates,
-                    Math.max(this.left + 8,
-                            cellLeft - 8 - this.mc.fontRenderer.getStringWidth(coordinates)),
-                    yPos + 6, GuiTheme.TEXT_INFO);
+            int deleteLeft = deleteLeft();
+            int statusLeft = statusLeft();
+            int textLeft = this.left + 6;
+            int nameLimit = statusLeft - 6 - textLeft;
 
-            // State cell: a flat plate with a colour bar, so the three states read at a glance.
-            Gui.drawRect(cellLeft, yPos + 2, cellRight, yPos + heightIn - 2, GuiTheme.CONTROL);
-            Gui.drawRect(cellLeft, yPos + 2, cellLeft + 3, yPos + heightIn - 2,
+            this.mc.fontRenderer.drawStringWithShadow(
+                    trim(entry.structureId, nameLimit), textLeft, yPos + 4, GuiTheme.TEXT);
+            this.mc.fontRenderer.drawStringWithShadow(
+                    trim("(" + entry.pos.getX() + ", " + entry.pos.getZ() + ")", nameLimit),
+                    textLeft, yPos + 15, GuiTheme.TEXT_INFO);
+
+            // State cell: flat plate with a colour bar, so the three states read at a glance.
+            Gui.drawRect(statusLeft, yPos + 6, statusLeft + STATUS_WIDTH, yPos + 6 + CELL_HEIGHT,
+                    GuiTheme.CONTROL);
+            Gui.drawRect(statusLeft, yPos + 6, statusLeft + 3, yPos + 6 + CELL_HEIGHT,
                     STATE_COLORS[stateIndex(entry.state)]);
             drawCenteredString(this.mc.fontRenderer, stateLabel(entry.state),
-                    (cellLeft + cellRight) / 2, yPos + 6, GuiTheme.TEXT);
+                    statusLeft + STATUS_WIDTH / 2, yPos + 10, GuiTheme.TEXT);
+
+            // Delete cell: the only way a spot becomes searchable again.
+            Gui.drawRect(deleteLeft, yPos + 6, deleteLeft + DELETE_WIDTH, yPos + 6 + CELL_HEIGHT,
+                    GuiTheme.CONTROL);
+            drawCenteredString(this.mc.fontRenderer, "x",
+                    deleteLeft + DELETE_WIDTH / 2, yPos + 10, GuiTheme.TEXT);
         }
 
         @Override
         protected void elementClicked(int index, boolean isDoubleClick, int mouseX, int mouseY) {
-            int cellLeft = this.right - EDGE - STATE_WIDTH;
-            if (mouseX >= cellLeft) {
+            if (index < 0 || index >= entries.size()) {
+                return;
+            }
+            if (mouseX >= deleteLeft()) {
+                delete(index);
+                return;
+            }
+            if (mouseX >= statusLeft() && mouseX < statusLeft() + STATUS_WIDTH) {
                 openMenu(index);
                 return;
             }
             selected = index;
-            againButton.enabled = true;
         }
 
         @Override
@@ -354,7 +449,7 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         }
 
         /** Handles a left click inside the viewport; returns false when it landed outside. */
-        boolean clickAt(int mouseX, int mouseY) {
+        boolean handleClick(int mouseX, int mouseY) {
             if (mouseX < this.left || mouseX >= this.right
                     || mouseY < this.top || mouseY >= this.bottom) {
                 return false;
@@ -397,17 +492,6 @@ public class GuiSuggestionWarehouse extends GuiScreen {
                 return "";
             }
             return this.mc.fontRenderer.trimStringToWidth(text, maxWidth);
-        }
-    }
-
-    private static int stateIndex(SearchMemory.State state) {
-        switch (state) {
-            case FOUND:
-                return 1;
-            case MISSING:
-                return 2;
-            default:
-                return 0;
         }
     }
 }

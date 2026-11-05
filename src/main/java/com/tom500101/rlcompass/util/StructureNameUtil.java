@@ -31,6 +31,10 @@ public final class StructureNameUtil {
         DISPLAY_NAME.put("reccomplex:structure", "Recurrent Complex Structure");
         DISPLAY_NAME.put("roguelike:dungeon", "Roguelike Dungeon");
         DISPLAY_NAME.put("doomlike:dungeon", "Doomlike Dungeon");
+        DISPLAY_NAME.put("rlcompass:dragonroost", "Dragon Roost");
+        DISPLAY_NAME.put("rlcompass:dragoncave", "Dragon Cave");
+        DISPLAY_NAME.put("rlcompass:lycanitesdungeon", "Lycanites Dungeon");
+        DISPLAY_NAME.put("rlcompass:shivaxi", "Shivaxi (Sky City)");
     }
 
     private StructureNameUtil() {
@@ -56,9 +60,19 @@ public final class StructureNameUtil {
         return trimmed.indexOf(':') >= 0 ? trimmed : "minecraft:" + trimmed;
     }
 
+    /**
+     * Structures whose per-chunk chance is so low that the default radius cannot contain one.
+     *
+     * <p>Shivaxi's real rate is about {@code 7.5e-6} per snowy chunk, i.e. one per ~1.3 million
+     * chunks; at the default 10000-block radius there is barely a 1% chance of any being inside.
+     * The picker uses this to tell the player to raise the radius before they wait for nothing.
+     */
+    public static boolean isUltraRare(String id) {
+        return "rlcompass:shivaxi".equals(canonical(id));
+    }
+
     /** Maps a {@code getStructureName()} value to a namespaced id. */
-    public static String idFor(String structureName) {
-        if (structureName == null || structureName.trim().isEmpty()) {
+    public static String idFor(String structureName) {        if (structureName == null || structureName.trim().isEmpty()) {
             return "minecraft:unknown";
         }
         String key = structureName.trim().toLowerCase(Locale.ROOT);

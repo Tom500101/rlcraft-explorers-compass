@@ -11,17 +11,43 @@ gui.rlcompass.sortSource=Source
 gui.rlcompass.rowSource=Source: %s
 gui.rlcompass.rowId=ID: %s
 
+# dimension tag on the right of each picker row
+gui.rlcompass.dim.overworld=Overworld
+gui.rlcompass.dim.nether=Nether
+gui.rlcompass.dim.end=The End
+
 # shown in chat when a search finds nothing
 rlcompass.search.notFound=No %s found within the search radius
+
+# shown in chat when the structure only generates in another dimension
+rlcompass.search.wrongDimension=%s only generates in %s — you are in %s
 
 # HUD line while a search is in flight
 rlcompass.hud.searching=Searching
 
-# suggestion warehouse: everything the compass has offered so far
+# cache warehouse: every answer the compass has given, with add/update/delete
 gui.rlcompass.warehouse=Warehouse
-gui.rlcompass.warehouse.title=Suggestion warehouse
-gui.rlcompass.warehouse.empty=Nothing searched yet
+gui.rlcompass.warehouse.title=Cache warehouse
+gui.rlcompass.warehouse.empty=Nothing cached yet — run a search and it appears here
+gui.rlcompass.warehouse.filter=Filter name or coordinates
 gui.rlcompass.warehouse.searchAgain=Search again
 gui.rlcompass.warehouse.state.new=Unvisited
 gui.rlcompass.warehouse.state.found=Found
 gui.rlcompass.warehouse.state.missing=Nothing there
+
+# ultra-rare deep scan (chat reporting)
+rlcompass.shivaxi.started=Deep scan started: radius %s chunks (%s total); results will be posted here
+rlcompass.shivaxi.running=A scan is already running: %s chunks, %s candidate(s); /rlcompass shivaxi cancel stops it
+rlcompass.shivaxi.progress=Deep scan: %s / %s chunks, %s eligible, %s candidate(s), %s s
+rlcompass.shivaxi.candidate=* Candidate #%s: chunk (%s, %s), around (%s, %s) — within 48 blocks; added to the warehouse
+rlcompass.shivaxi.finished=Deep scan finished: %s chunks, %s eligible, %s candidate(s), %s s
+rlcompass.shivaxi.none=Deep scan finished: %s chunks, %s eligible, no candidates, %s s (try a larger radius)
+rlcompass.shivaxi.stopped=Deep scan stopped: %s chunks, %s eligible, %s candidate(s), %s s
+rlcompass.shivaxi.notRegistered=Note: Shivaxi is not in RC's registry — this scan cannot hit it
+rlcompass.shivaxi.unavailable=Recurrent Complex is unavailable; cannot scan
+rlcompass.shivaxi.rejected=Dropped %s position(s) that failed RC's placement check: %s
+
+# search radius slider
+gui.rlcompass.radiusValue=Radius %s
+gui.rlcompass.radiusHint=Search time grows with the radius
+gui.rlcompass.radiusUltraRare=Ultra-rare: use radius 100000; a search can take minutes

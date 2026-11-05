@@ -112,7 +112,7 @@ public final class RecurrentComplexData {
             CACHE.put(key, records);
             KEYS.put(key, seen);
         }
-        LOG.info("[RC] {} structures known ({} cached + {} from the last session)",
+        LOG.info("[RC] {} structures known ({} from the on-disk TSV cache + {} from RC's save file)",
                 records.size(), stored, added);
         return records;
     }
@@ -158,7 +158,12 @@ public final class RecurrentComplexData {
             }
             return out;
         } catch (Throwable t) {
-            warnOnce(file.getAbsolutePath(), "[RC] could not read " + file.getName() + ": " + t);
+            // RC's own file is a secondary source only: RLTweaker empties its entry map on load and
+            // RC rewrites the file with just that session's additions, so this mod's TSV is the
+            // durable record. A truncated file here means a previous session died mid-save — the
+            // next save rewrites it, and nothing is lost because the TSV already holds everything.
+            warnOnce(file.getAbsolutePath(), "[RC] " + file.getName()
+                    + " was unreadable (" + t + "); continuing from the TSV cache, no records lost");
             return Collections.emptyList();
         }
     }

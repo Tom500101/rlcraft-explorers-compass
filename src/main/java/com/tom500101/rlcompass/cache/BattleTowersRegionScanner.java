@@ -313,11 +313,14 @@ public final class BattleTowersRegionScanner {
                     }
                     int chunkX = regionX * 32 + x;
                     int chunkZ = regionZ * 32 + z;
-                    // Chunk centre, not the block centroid: the centroid of a 48x48 Mega drifts
-                    // more than the merge radius between neighbouring chunks, which used to split
-                    // one compound into four hits.
-                    out.add(new TowerHit(
-                            new BlockPos(chunkX * 16 + 8, 64, chunkZ * 16 + 8), type));
+                    // Report the block-mass centroid, not the chunk centre: a tower sitting off the
+                    // chunk middle (or captured off-centre across several chunks) lands nearer the
+                    // actual keep, so the teleport drops you beside the tower instead of ~20 blocks
+                    // away. The centroid only drifts badly when the tower is small relative to the
+                    // chunk, which is exactly the case the height gate below already rejects.
+                    int centerX = chunkX * 16 + stats.centerX();
+                    int centerZ = chunkZ * 16 + stats.centerZ();
+                    out.add(new TowerHit(new BlockPos(centerX, 64, centerZ), type));
                 }
             }
         } catch (Throwable t) {
@@ -378,12 +381,56 @@ public final class BattleTowersRegionScanner {
      * {@code {Y: <byte>, Blocks: <byte[4096]>}} in one compound, so the tag sits within a few bytes
      * before the array; -1 means "not found" and the height check simply stays disabled.
      */
+    /**
+     * Reads a section's {@code Y} byte. In several Anvil layouts the {@code Blocks} array is followed
+     * by the {@code Data} array and only then by {@code Y}, so a backward-only scan (the old 40-byte
+     * window) never reaches it and the height check silently collapses to 0 — which dropped every
+     * tower. We look both ways and accept only a value that is a real section index (0-15).
+     */
     private static int readSectionY(byte[] data, int blocksTagPos) {
-        for (int k = blocksTagPos - 4; k >= Math.max(0, blocksTagPos - 40); k--) {
-            if ((data[k] & 0xFF) == 1 && data[k + 1] == 0 && data[k + 2] == 1
-                    && data[k + 3] == 'Y') {
-                int value = data[k + 4];
-                return value < 0 ? value + 256 : value;
+        // Forward: skip the Data byte array that may sit between Blocks and Y, then look for Y.
+        int scanFrom = blocksTagPos + 13 + 4096;
+        if (scanFrom + 11 <= data.length
+                && (data[scanFrom] & 0xFF) == 7 && data[scanFrom + 1] == 0 && data[scanFrom + 2] == 4
+                && data[scanFrom + 3] == 'D' && data[scanFrom + 4] == 'a'
+                && data[scanFrom + 5] == 't' && data[scanFrom + 6] == 'a'
+                && readInt(data, scanFrom + 7) == 2048) {
+            scanFrom += 7 + 4 + 2048;
+        }
+        int found = scanForwardY(data, scanFrom, 2200);
+        if (found >= 0) {
+            return found;
+        }
+        // Backward fallback for the vanilla order where Y precedes Blocks.
+        int end = Math.max(0, blocksTagPos - 2200);
+        for (int k = blocksTagPos - 4; k >= end; k--) {
+            int y = matchY(data, k);
+            if (y >= 0) {
+                return y;
+            }
+        }
+        return -1;
+    }
+
+    private static int scanForwardY(byte[] data, int scanFrom, int window) {
+        int limit = Math.min(data.length, scanFrom + window);
+        for (int k = scanFrom; k + 4 < limit; k++) {
+            int y = matchY(data, k);
+            if (y >= 0) {
+                return y;
+            }
+        }
+        return -1;
+    }
+
+    /** Returns the section Y (0-15) at a candidate tag position, or -1 when it is not a valid Y tag. */
+    private static int matchY(byte[] data, int k) {
+        if ((data[k] & 0xFF) == 1 && data[k + 1] == 0 && data[k + 2] == 1
+                && data[k + 3] == 'Y') {
+            int value = data[k + 4];
+            value = value < 0 ? value + 256 : value;
+            if (value >= 0 && value <= 15) {
+                return value;
             }
         }
         return -1;
@@ -502,6 +549,11 @@ public final class BattleTowersRegionScanner {
             if (netherrack >= MIN_NETHERRACK && soulSand >= MIN_SOUL_SAND) {
                 return "netherrack";
             }
+            // Cobble families keep the original block-count test only. A height gate looked tempting
+            // but the tracked-block height is an absolute Y span, not the tower's own height: a tower
+            // and a flat surface cluster (village, a player's ground-level build) both span a couple
+            // of 16-block sections and clear the same threshold, so the gate drops real short towers
+            // without excluding the clusters it was meant to catch.
             if (cobble >= MIN_COBBLE && mossy >= MIN_MOSSY) {
                 return "cobblestonemossy";
             }
