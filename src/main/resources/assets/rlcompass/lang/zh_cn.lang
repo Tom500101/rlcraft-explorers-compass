@@ -34,6 +34,13 @@ gui.rlcompass.warehouse.searchAgain=再搜一次
 gui.rlcompass.warehouse.state.new=未探索
 gui.rlcompass.warehouse.state.found=已找到
 gui.rlcompass.warehouse.state.missing=未找到
+gui.rlcompass.warehouse.teleport=传送
+
+# 缓存仓库的传送：Y 由服务端重新计算，只会落在安全的地表
+rlcompass.teleport.success=已传送到 %s 的地表：(%s, %s, %s)
+rlcompass.teleport.noPermission=传送需要开启作弊（单机）或 OP 权限
+rlcompass.teleport.wrongDimension=目标不在当前维度，无法传送
+rlcompass.teleport.unsafe=目标 16 格内没有安全的地表落点（海洋、岩浆或虚空）
 
 # 超稀有结构深度扫描（聊天框播报）
 rlcompass.shivaxi.started=深度扫描已开始：半径 %s 区块（共 %s 个），完成时会在聊天框播报

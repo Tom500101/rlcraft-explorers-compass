@@ -21,6 +21,8 @@ import org.lwjgl.input.Mouse;
 import org.lwjgl.opengl.GL11;
 
 import com.tom500101.rlcompass.cache.SearchMemory;
+import com.tom500101.rlcompass.network.PacketHandler;
+import com.tom500101.rlcompass.network.PacketTeleportRequest;
 
 /**
  * The cache warehouse: every answer the compass has ever given, with its state.
@@ -57,6 +59,7 @@ public class GuiSuggestionWarehouse extends GuiScreen {
     private static final int SEARCH_BOX_WIDTH = 150;
 
     private static final int ROW_HEIGHT = 28;
+    private static final int TELEPORT_WIDTH = 30;
     private static final int STATUS_WIDTH = 66;
     private static final int DELETE_WIDTH = 16;
     private static final int CELL_HEIGHT = 16;
@@ -75,6 +78,8 @@ public class GuiSuggestionWarehouse extends GuiScreen {
     private TransparentEditBox searchBox;
     private SearchMemory memory;
     private String lastFilter = "";
+    /** False when the save has cheats off: the teleport cell is drawn disabled and ignores clicks. */
+    private boolean teleportAllowed;
 
     private int menuRow = -1;
     private int menuLeft;
@@ -102,6 +107,7 @@ public class GuiSuggestionWarehouse extends GuiScreen {
 
         list = new ListSlot(mc, LIST_LEFT, width - EDGE, LIST_TOP, height - EDGE, ROW_HEIGHT);
         menuRow = -1;
+        teleportAllowed = canUseCommands();
         reloadEntries();
     }
 
@@ -116,6 +122,21 @@ public class GuiSuggestionWarehouse extends GuiScreen {
             return world == null ? null : SearchMemory.get(world);
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /**
+     * True when the integrated server would accept a command from this player — i.e. cheats are on,
+     * or the player is an OP. The warehouse only exists in single player, so this is the same gate
+     * the server applies to the teleport packet; checking it here just avoids a pointless round trip.
+     */
+    private boolean canUseCommands() {
+        try {
+            MinecraftServer server = mc.getIntegratedServer();
+            return server != null && mc.player != null
+                    && server.getPlayerList().canSendCommands(mc.player.getGameProfile());
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -299,6 +320,23 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         reloadEntries();
     }
 
+    /**
+     * Asks the server to put the player on the surface above this entry.
+     *
+     * <p>The screen closes first: the answer arrives as a chat message (or a refusal), and leaving
+     * the warehouse open would hide it. The server recomputes Y — the stored position is the
+     * structure's origin, which may be deep underground.
+     */
+    private void teleport(int row) {
+        if (row < 0 || row >= entries.size() || mc.player == null) {
+            return;
+        }
+        SearchMemory.Entry entry = entries.get(row);
+        PacketHandler.channel().sendToServer(new PacketTeleportRequest(entry.structureId,
+                entry.pos.getX(), entry.pos.getZ(), mc.player.dimension));
+        mc.displayGuiScreen(null);
+    }
+
     private static String stateLabel(SearchMemory.State state) {
         switch (state) {
             case FOUND:
@@ -354,6 +392,10 @@ public class GuiSuggestionWarehouse extends GuiScreen {
             return deleteLeft() - 4 - STATUS_WIDTH;
         }
 
+        int teleportLeft() {
+            return statusLeft() - 4 - TELEPORT_WIDTH;
+        }
+
         @Override
         protected int getSize() {
             return entries.size();
@@ -403,14 +445,24 @@ public class GuiSuggestionWarehouse extends GuiScreen {
 
             int deleteLeft = deleteLeft();
             int statusLeft = statusLeft();
+            int teleportLeft = teleportLeft();
             int textLeft = this.left + 6;
-            int nameLimit = statusLeft - 6 - textLeft;
+            int nameLimit = teleportLeft - 6 - textLeft;
 
             this.mc.fontRenderer.drawStringWithShadow(
                     trim(entry.structureId, nameLimit), textLeft, yPos + 4, GuiTheme.TEXT);
             this.mc.fontRenderer.drawStringWithShadow(
                     trim("(" + entry.pos.getX() + ", " + entry.pos.getZ() + ")", nameLimit),
                     textLeft, yPos + 15, GuiTheme.TEXT_INFO);
+
+            // Teleport cell: server-side Y calculation, so an underground origin still lands on grass.
+            // Dimmed when the save has cheats off — the server would refuse anyway.
+            Gui.drawRect(teleportLeft, yPos + 6, teleportLeft + TELEPORT_WIDTH, yPos + 6 + CELL_HEIGHT,
+                    teleportAllowed ? GuiTheme.CONTROL : GuiTheme.CONTROL_DISABLED);
+            drawCenteredString(this.mc.fontRenderer,
+                    I18n.format("gui.rlcompass.warehouse.teleport"),
+                    teleportLeft + TELEPORT_WIDTH / 2, yPos + 10,
+                    teleportAllowed ? GuiTheme.TEXT : GuiTheme.TEXT_DISABLED);
 
             // State cell: flat plate with a colour bar, so the three states read at a glance.
             Gui.drawRect(statusLeft, yPos + 6, statusLeft + STATUS_WIDTH, yPos + 6 + CELL_HEIGHT,
@@ -434,6 +486,12 @@ public class GuiSuggestionWarehouse extends GuiScreen {
             }
             if (mouseX >= deleteLeft()) {
                 delete(index);
+                return;
+            }
+            if (mouseX >= teleportLeft() && mouseX < teleportLeft() + TELEPORT_WIDTH) {
+                if (teleportAllowed) {
+                    teleport(index);
+                }
                 return;
             }
             if (mouseX >= statusLeft() && mouseX < statusLeft() + STATUS_WIDTH) {

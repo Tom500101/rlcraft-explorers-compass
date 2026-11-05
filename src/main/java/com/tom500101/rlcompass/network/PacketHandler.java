@@ -18,6 +18,7 @@ public final class PacketHandler {
     private static final int ID_STRUCTURE_RESULT = 0;
     private static final int ID_SEARCH_REQUEST = 1;
     private static final int ID_OPEN_GUI = 2;
+    private static final int ID_TELEPORT_REQUEST = 3;
 
     private static SimpleNetworkWrapper channel;
 
@@ -37,6 +38,8 @@ public final class PacketHandler {
         // Client -> server
         channel.registerMessage(PacketSearchRequest.Handler.class, PacketSearchRequest.class,
                 ID_SEARCH_REQUEST, Side.SERVER);
+        channel.registerMessage(PacketTeleportRequest.Handler.class, PacketTeleportRequest.class,
+                ID_TELEPORT_REQUEST, Side.SERVER);
     }
 
     public static SimpleNetworkWrapper channel() {

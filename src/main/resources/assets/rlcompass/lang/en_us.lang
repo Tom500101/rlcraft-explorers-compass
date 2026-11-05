@@ -34,6 +34,13 @@ gui.rlcompass.warehouse.searchAgain=Search again
 gui.rlcompass.warehouse.state.new=Unvisited
 gui.rlcompass.warehouse.state.found=Found
 gui.rlcompass.warehouse.state.missing=Nothing there
+gui.rlcompass.warehouse.teleport=TP
+
+# warehouse teleport: the server recomputes Y and only lands on a safe surface
+rlcompass.teleport.success=Teleported to the surface above %s at (%s, %s, %s)
+rlcompass.teleport.noPermission=Teleporting needs cheats enabled (single player) or OP permissions
+rlcompass.teleport.wrongDimension=That entry belongs to another dimension
+rlcompass.teleport.unsafe=No safe surface landing spot within 16 blocks (ocean, lava or void)
 
 # ultra-rare deep scan (chat reporting)
 rlcompass.shivaxi.started=Deep scan started: radius %s chunks (%s total); results will be posted here
