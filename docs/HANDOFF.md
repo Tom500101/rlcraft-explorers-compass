@@ -2159,4 +2159,13 @@ SHA256 `74046863115c5f1c54dc26ee10e1d57eeb51c6d030553b94fd56120baa23fa21`，
   `skipped: RC did not place it` 会继续出现；这是「预测到了但 RC 没生成」的正常过滤。
 
 ### 44.4 发布
-版本 **1.2.0**，提交并推送；jar 由 `build/libs` 产出（发布记录见 GitHub Release）。
+版本 **1.2.0**，提交并推送（`c55e0fb`）。GitHub Release 已发布：
+
+- tag `v1.2.0` → `c55e0fb443031aaef8f5949c75a63fb1bb91afd6`
+- Release: <https://github.com/Tom500101/rlcraft-explorers-compass/releases/tag/v1.2.0>
+- 资产 `rlcraft-explorers-compass-1.2.0.jar`，`403,496` 字节，
+  SHA-256 `ae951010c37bf8bb83d6fbd08551ba8e0486a8499a28bde43bf75c687f4bf4b6`。
+
+发布走的是 API（本机 22 端口被封，HTTPS 的 `git push` 又受 schannel 吊销检查限制，
+`curl --ssl-no-revoke` 可用）：先用 `POST /git/refs` 建 tag，再 `POST /releases`，
+最后 `POST /uploads.github.com/.../assets` 传 jar。README 的下载链接与校验值同步改为 1.2.0。

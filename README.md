@@ -72,11 +72,10 @@ RLCraft 往 1.12.2 里塞进了两百多个模组，结构也大多来自模组�
 
 **安装**
 
-1. 下载 [`rlcraft-explorers-compass-1.1.0.jar`](https://github.com/Tom500101/rlcraft-explorers-compass/releases/download/v1.1.0/rlcraft-explorers-compass-1.1.0.jar)
+1. 下载 [`rlcraft-explorers-compass-1.2.0.jar`](https://github.com/Tom500101/rlcraft-explorers-compass/releases/download/v1.2.0/rlcraft-explorers-compass-1.2.0.jar)
    （[全部发布](https://github.com/Tom500101/rlcraft-explorers-compass/releases)）；也可以按文末「开发与构建」
    自行编译，产物在 `build/libs/`。
-   > 说明：Release 里目前放的是 **1.1.0 稳定版**；本文记录的 **1.2.0** 正在实机验收，
-   > 暂未发布，需要体验新功能请自行构建（或直接用构建后自动部署到 `mods/` 的 jar）。
+   > 校验：`403,496` 字节，SHA-256 `ae951010c37bf8bb83d6fbd08551ba8e0486a8499a28bde43bf75c687f4bf4b6`。
 2. 把 jar 放进整合包的 `mods/` 目录。
 3. **客户端与服务端都要装**，且版本一致（原因见「多人游戏说明」）。
 4. 启动游戏。首次启动会生成 `config/rlcompass.cfg`。
