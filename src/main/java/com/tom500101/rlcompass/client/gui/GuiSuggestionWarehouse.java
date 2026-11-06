@@ -333,7 +333,7 @@ public class GuiSuggestionWarehouse extends GuiScreen {
         }
         SearchMemory.Entry entry = entries.get(row);
         PacketHandler.channel().sendToServer(new PacketTeleportRequest(entry.structureId,
-                entry.pos.getX(), entry.pos.getZ(), mc.player.dimension));
+                entry.pos.getX(), entry.pos.getY(), entry.pos.getZ(), mc.player.dimension));
         mc.displayGuiScreen(null);
     }
 

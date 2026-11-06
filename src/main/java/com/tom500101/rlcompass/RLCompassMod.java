@@ -68,7 +68,7 @@ public class RLCompassMod {
     public static final String NAME = "RLcraft Explorer's Compass";
 
     /** Displayed version; kept in sync with {@code mod_version} in gradle.properties. */
-    public static final String VERSION = "1.1.0";
+    public static final String VERSION = "1.2.0";
 
     /** When set to {@code true}, the structure probe runs automatically on server start. */
     public static final String PROBE_PROPERTY = "rlcompass.probe";
@@ -97,7 +97,13 @@ public class RLCompassMod {
         // Advances the ultra-rare deep scan a couple of milliseconds per tick instead of freezing
         // the server for a minute.
         MinecraftForge.EVENT_BUS.register(
-                new com.tom500101.rlcompass.locate.impl.ShivaxiLocator.Ticker());
+                new com.tom500101.rlcompass.locate.impl.RcUltraRareLocator.Ticker());
+        // The Author's Hall has its own dedicated RNG-prefiltered scanner (restored on request,
+        // see HANDOFF §39); rare targets use the parameterised one. Both are idle unless started.
+        MinecraftForge.EVENT_BUS.register(
+                new com.tom500101.rlcompass.locate.impl.AuthorHallFastScan.Ticker());
+        MinecraftForge.EVENT_BUS.register(
+                new com.tom500101.rlcompass.locate.impl.RcFastScan.Ticker());
         // Client classes do not exist on a dedicated server, so the HUD renderer is only touched here.
         if (event.getSide().isClient()) {
             ClientSetup.register();

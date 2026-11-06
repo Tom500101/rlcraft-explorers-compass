@@ -19,6 +19,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.config.CompassConfig;
+import com.tom500101.rlcompass.util.StructureNameUtil;
 
 /**
  * Holds every registered {@link IStructureLocator} and answers "nearest structure of type X".
@@ -34,7 +35,7 @@ public final class StructureLocatorRegistry {
 
     /** Mirrors the {@code @Config.RangeInt} bounds on {@link CompassConfig#searchRadius}. */
     private static final int MIN_RADIUS = 100;
-    private static final int MAX_RADIUS = 20000;
+    private static final int MAX_RADIUS = 100000;
 
     /** Variant lists may scan a config directory; 60s keeps repeated picker opens cheap. */
     private static final long VARIANT_CACHE_TTL_MS = 60_000L;
@@ -270,10 +271,15 @@ public final class StructureLocatorRegistry {
                 continue;
             }
             if (memory != null && memory.isKnown(candidate.getStructureId(), candidate.getPos())) {
-                LOG.info("[REGISTRY] {} at ({}, {}) is already in the warehouse; delete that row "
-                                + "to search it again", candidate.getStructureId(),
-                        candidate.getPos().getX(), candidate.getPos().getZ());
-                continue;
+                // Ultra-rare structures are too hard to find to hide behind the warehouse rule: a
+                // found or predicted one may be revisited until the player marks it missing.
+                boolean ultraRare = StructureNameUtil.isUltraRare(candidate.getStructureId());
+                if (!ultraRare || memory.isMissing(candidate.getStructureId(), candidate.getPos())) {
+                    LOG.info("[REGISTRY] {} at ({}, {}) is already in the warehouse; delete that row "
+                                    + "to search it again", candidate.getStructureId(),
+                            candidate.getPos().getX(), candidate.getPos().getZ());
+                    continue;
+                }
             }
             if (best == null || candidate.getDistanceSq() < best.getDistanceSq()) {
                 best = candidate;

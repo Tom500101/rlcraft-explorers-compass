@@ -9,15 +9,18 @@ import java.util.List;
 import java.util.Set;
 
 import net.minecraft.client.audio.PositionedSoundRecord;
+import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.resources.I18n;
 import net.minecraft.init.SoundEvents;
+import net.minecraft.util.text.TextComponentTranslation;
 
 import com.tom500101.rlcompass.client.ClientSearchStatus;
 import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureVariant;
+import com.tom500101.rlcompass.network.PacketDeepScanRequest;
 import com.tom500101.rlcompass.network.PacketHandler;
 import com.tom500101.rlcompass.network.PacketSearchRequest;
 import com.tom500101.rlcompass.util.StructureNameUtil;
@@ -41,6 +44,28 @@ public class GuiStructureSelect extends GuiScreen {
     private static final int WAREHOUSE_BUTTON_ID = 3;
     private static final int SORT_BUTTON_ID = 1;
     private static final int CANCEL_BUTTON_ID = 2;
+    private static final int HOT_BUTTON_ID = 4;
+
+    /** Quick-pick rows, in display order. Missing ids are dropped when the picker is built. */
+    private static final String[] HOT_IDS = {
+            "rlcompass:dragoncave",
+            "rlcompass:shivaxi",
+            "rlcompass:authorshall",
+            "rlcompass:icecity",
+            "rlcompass:aeriveth",
+            "rlcompass:sanctuary",
+            "rlcompass:erolith",
+            "rlcompass:plainscity",
+            "rlcompass:meridor",
+            "rlcompass:islandcity",
+            "rlcompass:foreststronghold",
+            "rlcompass:crystalshrine",
+            "rlcompass:corruptedisland",
+            "rlcompass:defiledhut"
+    };
+    private static final int HOT_MENU_WIDTH = 160;
+    private static final int HOT_ROW_HEIGHT = 18;
+    private static final int HOT_MENU_TOP = 65;
 
     // Reference geometry: a 110px action column on the left, the list column starting at x=130,
     // 10px screen edges, 20px controls. Fixed pixels on purpose — the reference does not reflow.
@@ -61,6 +86,10 @@ public class GuiStructureSelect extends GuiScreen {
     private TransparentButton warehouseButton;
     private TransparentButton sortButton;
     private TransparentButton cancelButton;
+    private TransparentButton hotButton;
+    private boolean hotOpen;
+    private int hotScroll;
+    private final List<String> hotIds = new ArrayList<String>();
     private TransparentEditBox searchBox;
     private StructureSearchList selectionList;
     private RadiusSlider radiusSlider;
@@ -85,19 +114,33 @@ public class GuiStructureSelect extends GuiScreen {
         }
     }
 
+    /** Drops hot ids whose mod is not installed in this world; the popup only shows real targets. */
+    private void rebuildHotIds() {
+        hotScroll = 0;
+        hotIds.clear();
+        for (String id : HOT_IDS) {
+            if (baseIds.contains(id)) {
+                hotIds.add(id);
+            }
+        }
+    }
+
     @Override
     public void initGui() {
         buttonList.clear();
 
         searchButton = new TransparentButton(SEARCH_BUTTON_ID, LEFT_X, 40, LEFT_WIDTH,
                 BUTTON_HEIGHT, I18n.format("gui.rlcompass.search"));
-        sortButton = new TransparentButton(SORT_BUTTON_ID, LEFT_X, 65, LEFT_WIDTH,
+        hotButton = new TransparentButton(HOT_BUTTON_ID, LEFT_X, 65, LEFT_WIDTH,
+                BUTTON_HEIGHT, I18n.format("gui.rlcompass.hot"));
+        sortButton = new TransparentButton(SORT_BUTTON_ID, LEFT_X, 90, LEFT_WIDTH,
                 BUTTON_HEIGHT, sortMode.label());
         cancelButton = new TransparentButton(CANCEL_BUTTON_ID, LEFT_X, height - 30, LEFT_WIDTH,
                 BUTTON_HEIGHT, I18n.format("gui.cancel"));
-        warehouseButton = new TransparentButton(WAREHOUSE_BUTTON_ID, LEFT_X, 90, LEFT_WIDTH,
+        warehouseButton = new TransparentButton(WAREHOUSE_BUTTON_ID, LEFT_X, 115, LEFT_WIDTH,
                 BUTTON_HEIGHT, I18n.format("gui.rlcompass.warehouse"));
         buttonList.add(searchButton);
+        buttonList.add(hotButton);
         buttonList.add(warehouseButton);
         buttonList.add(sortButton);
         buttonList.add(cancelButton);
@@ -105,7 +148,7 @@ public class GuiStructureSelect extends GuiScreen {
         // Radius is the one setting a player actually needs to touch during a search: the ultra-rare
         // structures cannot be found at the default radius, so it lives on the action column instead
         // of behind a config file.
-        radiusSlider = new RadiusSlider(LEFT_X, 115, LEFT_WIDTH, BUTTON_HEIGHT, 100, 100000, 100,
+        radiusSlider = new RadiusSlider(LEFT_X, 140, LEFT_WIDTH, BUTTON_HEIGHT, 100, 100000, 100,
                 CompassConfig.searchRadius);
 
         searchBox = new TransparentEditBox(0, fontRenderer, LIST_LEFT, 10, SEARCH_BOX_WIDTH,
@@ -118,6 +161,7 @@ public class GuiStructureSelect extends GuiScreen {
 
         selectionList = new StructureSearchList(this, mc, 0, 1, 0, 1, SLOT_HEIGHT);
         rebuildEntries();
+        rebuildHotIds();
 
         layoutControls();
         refreshEntries(false);
@@ -138,11 +182,27 @@ public class GuiStructureSelect extends GuiScreen {
     @Override
     public void handleMouseInput() throws IOException {
         super.handleMouseInput();
+        if (hotOpen) {
+            int wheel = org.lwjgl.input.Mouse.getDWheel();
+            if (wheel != 0) {
+                hotScroll -= Integer.signum(wheel);
+                clampHotScroll();
+                return;
+            }
+        }
         selectionList.handleMouseInput();
     }
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
+        if (hotOpen) {
+            int hotIndex = hotIndexAt(mouseX, mouseY);
+            hotOpen = false;
+            if (hotIndex >= 0) {
+                searchHot(hotIds.get(hotIndex));
+            }
+            return;
+        }
         if (mouseButton == 0 && radiusSlider != null && radiusSlider.mousePressed(mouseX, mouseY)) {
             return;
         }
@@ -174,7 +234,11 @@ public class GuiStructureSelect extends GuiScreen {
 
     /** Writes the slider value into the config field and flushes it to {@code config/rlcompass.cfg}. */
     private void persistRadius() {
-        CompassConfig.searchRadius = radiusSlider.getValue();
+        if (radiusSlider == null) {
+            return;
+        }
+        int blocks = radiusSlider.getValue();
+        CompassConfig.searchRadius = blocks;
         try {
             net.minecraftforge.common.config.ConfigManager.sync(
                     com.tom500101.rlcompass.RLCompassMod.MODID,
@@ -182,6 +246,12 @@ public class GuiStructureSelect extends GuiScreen {
         } catch (Throwable ignored) {
             // an unwritable config must not crash the screen; the value still applies this session
         }
+        // Forge's sync can reload the file into the static field; put the selected value back so a
+        // search started right after the drag cannot fall back to the previous radius.
+        CompassConfig.searchRadius = blocks;
+        mc.ingameGUI.getChatGUI().printChatMessage(
+                new TextComponentTranslation("rlcompass.radius.saved",
+                        Integer.valueOf(blocks), Integer.valueOf(Math.max(1, blocks / 16))));
     }
 
     @Override
@@ -193,6 +263,10 @@ public class GuiStructureSelect extends GuiScreen {
             return;
         }
         if (keyCode == 1) {
+            if (hotOpen) {
+                hotOpen = false;
+                return;
+            }
             mc.displayGuiScreen(null);
             return;
         }
@@ -202,11 +276,22 @@ public class GuiStructureSelect extends GuiScreen {
     @Override
     protected void actionPerformed(GuiButton button) throws IOException {
         if (button.id == SEARCH_BUTTON_ID) {
+            if (ClientSearchStatus.isDeepScan()) {
+                // The button doubles as "cancel" while a deep scan is running: the command would
+                // need cheats, and leaving a multi-minute scan unstoppable is worse.
+                PacketHandler.channel().sendToServer(PacketDeepScanRequest.cancel());
+                ClientSearchStatus.end();
+                mc.ingameGUI.getChatGUI().printChatMessage(
+                        new TextComponentTranslation("rlcompass.scan.cancelling"));
+                return;
+            }
             StructureSearchEntry selected = selectionList.getSelected();
             if (selected != null) {
                 // Parent + variant, never the composed variant id: the registry routes on the parent.
                 searchFor(selected.getParentId(), selected.getVariantId());
             }
+        } else if (button.id == HOT_BUTTON_ID) {
+            hotOpen = !hotOpen;
         } else if (button.id == SORT_BUTTON_ID) {
             sortMode = sortMode.next();
             sortButton.displayString = sortMode.label();
@@ -245,15 +330,24 @@ public class GuiStructureSelect extends GuiScreen {
         }
 
         radiusSlider.draw(mc, mouseX, mouseY);
-        int hintY = 140;
+        int hintY = 165;
         hintY = drawWrapped(I18n.format("gui.rlcompass.radiusHint"), hintY, GuiTheme.TEXT_INFO);
         StructureSearchEntry selected = selectionList.getSelected();
         if (selected != null && StructureNameUtil.isUltraRare(selected.getParentId())) {
             // Ultra-rare structures have a per-chunk chance in the 1e-5 range: the default radius
-            // simply cannot contain one, and the player should know before waiting.
-            drawWrapped(I18n.format("gui.rlcompass.radiusUltraRare"), hintY + 2, GuiTheme.TEXT);
+            // simply cannot contain one, and the player should know before waiting. The compass
+            // search only gets an 8-second budget, so point at the tick-sliced deep scan as well.
+            int after = drawWrapped(I18n.format("gui.rlcompass.radiusUltraRare"), hintY + 2,
+                    GuiTheme.TEXT);
+            // The picker now starts the same deep scan itself; the hint must not send players to a
+            // command that requires cheats.
+            if (height - after > 80) {
+                drawWrapped(I18n.format("gui.rlcompass.radiusScanHint"),
+                        after + 2, GuiTheme.TEXT_INFO);
+            }
         }
 
+        drawHotMenu(mouseX, mouseY);
         super.drawScreen(mouseX, mouseY, partialTicks);
     }
 
@@ -272,6 +366,107 @@ public class GuiStructureSelect extends GuiScreen {
     }
 
     /** Sends the search request for a plain structure id and closes the picker. */
+    /** The quick-pick popup: a near-opaque list to the right of the action column. */
+    private void drawHotMenu(int mouseX, int mouseY) {
+        if (!hotOpen) {
+            return;
+        }
+        int left = hotMenuLeft();
+        int top = HOT_MENU_TOP;
+        int rows = hotVisibleRows();
+        int height = Math.max(1, rows) * HOT_ROW_HEIGHT + 4;
+        Gui.drawRect(left, top, left + HOT_MENU_WIDTH, top + height, GuiTheme.MENU_BACKGROUND);
+        GuiTheme.outline(left, top, left + HOT_MENU_WIDTH, top + height, GuiTheme.MENU_BORDER);
+        if (hotIds.isEmpty()) {
+            fontRenderer.drawString(I18n.format("gui.rlcompass.hot.empty"), left + 6, top + 7,
+                    GuiTheme.TEXT_HINT);
+            return;
+        }
+        clampHotScroll();
+        int end = Math.min(hotIds.size(), hotScroll + rows);
+        for (int i = hotScroll; i < end; i++) {
+            int rowTop = top + 2 + (i - hotScroll) * HOT_ROW_HEIGHT;
+            if (mouseX >= left && mouseX < left + HOT_MENU_WIDTH
+                    && mouseY >= rowTop && mouseY < rowTop + HOT_ROW_HEIGHT) {
+                Gui.drawRect(left + 1, rowTop, left + HOT_MENU_WIDTH - 1, rowTop + HOT_ROW_HEIGHT,
+                        GuiTheme.MENU_HOVER);
+            }
+            String id = hotIds.get(i);
+            String name = StructureNameUtil.displayName(id);
+            int nameLimit = HOT_MENU_WIDTH - 12;
+            if (StructureNameUtil.isUltraRare(id)) {
+                String tag = I18n.format("gui.rlcompass.hot.ultra");
+                int tagLeft = left + HOT_MENU_WIDTH - 6 - fontRenderer.getStringWidth(tag);
+                fontRenderer.drawString(tag, tagLeft, rowTop + 5, GuiTheme.TEXT_INFO);
+                nameLimit = tagLeft - 4 - (left + 6);
+            }
+            if (fontRenderer.getStringWidth(name) > nameLimit) {
+                name = fontRenderer.trimStringToWidth(name, Math.max(8, nameLimit - 6)) + "…";
+            }
+            fontRenderer.drawString(name, left + 6, rowTop + 5, GuiTheme.TEXT);
+        }
+        // A scroll hint, because the popup is taller than the screen on small windows.
+        if (hotIds.size() > rows) {
+            String more = String.format("%d/%d", hotScroll + 1, hotIds.size());
+            fontRenderer.drawString(more, left + HOT_MENU_WIDTH - 6 - fontRenderer.getStringWidth(more),
+                    top + height + 2, GuiTheme.TEXT_HINT);
+        }
+    }
+
+    /** Rows the popup can show without running past the bottom edge. */
+    private int hotVisibleRows() {
+        int available = height - HOT_MENU_TOP - 12;
+        int rows = Math.max(3, available / HOT_ROW_HEIGHT);
+        return Math.max(1, Math.min(hotIds.size(), rows));
+    }
+
+    private void clampHotScroll() {
+        int max = Math.max(0, hotIds.size() - hotVisibleRows());
+        if (hotScroll > max) {
+            hotScroll = max;
+        }
+        if (hotScroll < 0) {
+            hotScroll = 0;
+        }
+    }
+
+    private int hotMenuLeft() {
+        return Math.max(EDGE, Math.min(LEFT_X + LEFT_WIDTH + 4,
+                width - EDGE - HOT_MENU_WIDTH));
+    }
+
+    private int hotIndexAt(int mouseX, int mouseY) {
+        int left = hotMenuLeft();
+        if (mouseX < left || mouseX >= left + HOT_MENU_WIDTH) {
+            return -1;
+        }
+        int offset = mouseY - (HOT_MENU_TOP + 2);
+        if (offset < 0) {
+            return -1;
+        }
+        int index = hotScroll + offset / HOT_ROW_HEIGHT;
+        return index >= 0 && index < hotIds.size() ? index : -1;
+    }
+
+    /**
+     * One-click quick search. Ultra-rare structures get the 100000-block radius they need, unless
+     * the player already set something larger.
+     */
+    private void searchHot(String structureId) {
+        if (structureId == null) {
+            return;
+        }
+        int recommended = StructureNameUtil.isUltraRare(structureId) ? 100000 : 10000;
+        if (CompassConfig.searchRadius != recommended) {
+            CompassConfig.searchRadius = recommended;
+            if (radiusSlider != null) {
+                radiusSlider.setValue(recommended);
+                persistRadius();
+            }
+        }
+        searchFor(structureId, null);
+    }
+
     void searchFor(String structureId) {
         searchFor(new StructureSearchEntry(structureId));
     }
@@ -300,9 +495,24 @@ public class GuiStructureSelect extends GuiScreen {
         }
         mc.getSoundHandler().playSound(
                 PositionedSoundRecord.getMasterRecord(SoundEvents.UI_BUTTON_CLICK, 1.0F));
-        // A themed search can take a second or more on the server; the HUD shows the wait.
-        ClientSearchStatus.begin();
-        PacketHandler.channel().sendToServer(new PacketSearchRequest(parentId, variantId));
+        // Read the slider, not the config field: ConfigManager.sync can reload the file into the
+        // static field a moment later, which is exactly how a 100000-block selection used to turn
+        // into a 10000-block search.
+        int radiusBlocks = radiusSlider != null
+                ? radiusSlider.getValue() : CompassConfig.searchRadius;
+        if (variantId == null && StructureNameUtil.isDeepScanTarget(parentId)) {
+            // RC deep scans are tick-sliced and take minutes. Sending them through the synchronous
+            // locator used to stop at an 8-second budget and report "not found", and the command
+            // path needs cheats — neither is acceptable for a normal player.
+            ClientSearchStatus.beginDeepScan();
+            PacketHandler.channel().sendToServer(
+                    new PacketDeepScanRequest(parentId, radiusBlocks));
+        } else {
+            // A themed search can take a second or more on the server; the HUD shows the wait.
+            ClientSearchStatus.begin();
+            PacketHandler.channel().sendToServer(
+                    new PacketSearchRequest(parentId, variantId, radiusBlocks));
+        }
         mc.displayGuiScreen(null);
     }
 
@@ -470,11 +680,22 @@ public class GuiStructureSelect extends GuiScreen {
     }
 
     private void updateButtonState() {
-        if (selectionList == null || searchButton == null) {
+        if (searchButton == null) {
             return;
         }
-        StructureSearchEntry selected = selectionList.getSelected();
-        searchButton.enabled = selected != null && selected.isConcrete();
+        if (ClientSearchStatus.isDeepScan()) {
+            // The same button cancels the running scan, so it must stay clickable even when the
+            // list has no selection (the player may have closed and reopened the picker).
+            searchButton.enabled = true;
+            searchButton.displayString = I18n.format("gui.rlcompass.cancelScan");
+        } else {
+            if (selectionList == null) {
+                return;
+            }
+            StructureSearchEntry selected = selectionList.getSelected();
+            searchButton.displayString = I18n.format("gui.rlcompass.search");
+            searchButton.enabled = selected != null && selected.isConcrete();
+        }
         sortButton.enabled = allEntries.size() > 1;
     }
 
@@ -484,13 +705,18 @@ public class GuiStructureSelect extends GuiScreen {
         searchButton.width = LEFT_WIDTH;
         searchButton.height = BUTTON_HEIGHT;
 
+        hotButton.x = LEFT_X;
+        hotButton.y = 65;
+        hotButton.width = LEFT_WIDTH;
+        hotButton.height = BUTTON_HEIGHT;
+
         sortButton.x = LEFT_X;
-        sortButton.y = 65;
+        sortButton.y = 90;
         sortButton.width = LEFT_WIDTH;
         sortButton.height = BUTTON_HEIGHT;
 
         warehouseButton.x = LEFT_X;
-        warehouseButton.y = 90;
+        warehouseButton.y = 115;
         warehouseButton.width = LEFT_WIDTH;
         warehouseButton.height = BUTTON_HEIGHT;
 

@@ -26,6 +26,7 @@ public class PacketTeleportRequest implements IMessage {
 
     private String structureId = "";
     private int x;
+    private int y;
     private int z;
     private int dimension;
 
@@ -33,9 +34,10 @@ public class PacketTeleportRequest implements IMessage {
     public PacketTeleportRequest() {
     }
 
-    public PacketTeleportRequest(String structureId, int x, int z, int dimension) {
+    public PacketTeleportRequest(String structureId, int x, int y, int z, int dimension) {
         this.structureId = structureId == null ? "" : structureId;
         this.x = x;
+        this.y = y;
         this.z = z;
         this.dimension = dimension;
     }
@@ -46,6 +48,10 @@ public class PacketTeleportRequest implements IMessage {
 
     public int getX() {
         return x;
+    }
+
+    public int getY() {
+        return y;
     }
 
     public int getZ() {
@@ -60,6 +66,7 @@ public class PacketTeleportRequest implements IMessage {
     public void fromBytes(ByteBuf buf) {
         structureId = ByteBufUtils.readUTF8String(buf);
         x = buf.readInt();
+        y = buf.readInt();
         z = buf.readInt();
         dimension = buf.readInt();
     }
@@ -68,6 +75,7 @@ public class PacketTeleportRequest implements IMessage {
     public void toBytes(ByteBuf buf) {
         ByteBufUtils.writeUTF8String(buf, structureId);
         buf.writeInt(x);
+        buf.writeInt(y);
         buf.writeInt(z);
         buf.writeInt(dimension);
     }
@@ -104,8 +112,8 @@ public class PacketTeleportRequest implements IMessage {
                 player.sendMessage(new TextComponentTranslation("rlcompass.teleport.wrongDimension"));
                 return;
             }
-            BlockPos spot = SurfaceTeleport.find(player.getEntityWorld(), message.getX(),
-                    message.getZ());
+            BlockPos spot = SurfaceTeleport.findNear(player.getEntityWorld(), message.getX(),
+                    message.getY(), message.getZ());
             if (spot == null) {
                 player.sendMessage(new TextComponentTranslation("rlcompass.teleport.unsafe"));
                 return;

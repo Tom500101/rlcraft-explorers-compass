@@ -36,6 +36,20 @@ public final class SurfaceTeleport {
     }
 
     /**
+     * Returns a safe standing position for a teleport to {@code (x, y, z)}.
+     *
+     * <p>The End has no surface above its islands, so the stored structure Y is used as an anchor and
+     * the landing spot must sit on a real island floor. Everywhere else the old "surface above the
+     * column" rule applies unchanged.
+     */
+    public static BlockPos findNear(World world, int x, int y, int z) {
+        if (world != null && world.provider.getDimension() == 1) {
+            return findOnEndIsland(world, x, y, z);
+        }
+        return find(world, x, z);
+    }
+
+    /**
      * Returns a safe standing position near {@code (x, z)}, or {@code null} when every column within
      * {@link #SEARCH_RADIUS} is water, lava, a hazard or empty.
      */
@@ -57,6 +71,99 @@ public final class SurfaceTeleport {
             }
         }
         return null;
+    }
+
+    /**
+     * End islands: search around the structure's own Y first, then fall back to the island top.
+     *
+     * <p>A column over the void has no "surface", and the topmost block may be a chorus plant or a
+     * floating piece of the structure, so a landing spot must pass {@link #hasIslandFloor}: a 3x3
+     * solid floor with real rock underneath. Refusing is always better than dropping the player into
+     * the void.
+     */
+    private static BlockPos findOnEndIsland(World world, int x, int y, int z) {
+        boolean anchored = y > MIN_Y && y < world.getActualHeight() - 2;
+        // The stored Y is the structure's base, and an End island can float well above or below it
+        // (measured case: structure Y 132, island surface 180). Try the window first, then fall back
+        // to the whole column instead of refusing outright.
+        if (anchored) {
+            BlockPos spot = searchEndRings(world, x, z, y - 8, y + 16);
+            if (spot != null) {
+                return spot;
+            }
+        }
+        return searchEndRings(world, x, z, MIN_Y, world.getActualHeight() - 1);
+    }
+
+    /** Walks outward in rings and returns the first safe End island floor inside the Y window. */
+    private static BlockPos searchEndRings(World world, int x, int z, int minY, int maxY) {
+        for (int radius = 0; radius <= SEARCH_RADIUS; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != radius) {
+                        continue;
+                    }
+                    BlockPos spot = findOnIslandColumn(world, x + dx, z + dz, minY, maxY);
+                    if (spot != null) {
+                        return spot;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** One End column inside a Y window, top down, accepting only real island floors. */
+    private static BlockPos findOnIslandColumn(World world, int x, int z, int minY, int maxY) {
+        BlockPos anchor = new BlockPos(x, 0, z);
+        if (!world.isBlockLoaded(anchor)) {
+            world.getChunk(x >> 4, z >> 4);
+        }
+        int top = Math.min(maxY, world.getActualHeight() - 1);
+        int bottom = Math.max(MIN_Y, minY);
+        for (int y = top; y >= bottom; y--) {
+            BlockPos pos = new BlockPos(x, y, z);
+            IBlockState state = world.getBlockState(pos);
+            if (!state.getMaterial().isSolid() || isHazard(state.getBlock())
+                    || isTreePart(state.getBlock())) {
+                continue;
+            }
+            BlockPos feet = pos.up();
+            if (!isClear(world, feet) || !isClear(world, feet.up())) {
+                continue;
+            }
+            if (!hasIslandFloor(world, feet)) {
+                continue;
+            }
+            return feet;
+        }
+        return null;
+    }
+
+    /**
+     * True when the block under the feet is part of an island rather than a ledge: most of the 3x3
+     * around it is solid, and the column does not end two blocks down.
+     */
+    private static boolean hasIslandFloor(World world, BlockPos feet) {
+        BlockPos ground = feet.down();
+        int solid = 0;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (world.getBlockState(ground.add(dx, 0, dz)).getMaterial().isSolid()) {
+                    solid++;
+                }
+            }
+        }
+        if (solid < 7) {
+            return false;
+        }
+        int deep = 0;
+        for (int depth = 1; depth <= 5; depth++) {
+            if (world.getBlockState(ground.down(depth)).getMaterial().isSolid()) {
+                deep++;
+            }
+        }
+        return deep >= 4;
     }
 
     /** Scans one column from the top down; the returned position is where the player's feet go. */

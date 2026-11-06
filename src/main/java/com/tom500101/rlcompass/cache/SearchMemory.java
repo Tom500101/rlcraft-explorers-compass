@@ -111,6 +111,12 @@ public final class SearchMemory {
         return entries.containsKey(key(structureId, pos.getX(), pos.getZ()));
     }
 
+    /** True when the player marked this point as "nothing there". */
+    public boolean isMissing(String structureId, BlockPos pos) {
+        Entry entry = entries.get(key(structureId, pos.getX(), pos.getZ()));
+        return entry != null && entry.state == State.MISSING;
+    }
+
     public List<Entry> entries() {
         return new ArrayList<Entry>(entries.values());
     }

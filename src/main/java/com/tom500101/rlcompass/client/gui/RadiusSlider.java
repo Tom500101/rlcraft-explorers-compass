@@ -42,6 +42,11 @@ public class RadiusSlider {
         return value;
     }
 
+    /** Programmatic change (hot-structure shortcuts), snapped to the same step as a drag. */
+    public void setValue(int newValue) {
+        this.value = clamp(newValue);
+    }
+
     public boolean isDragging() {
         return dragging;
     }

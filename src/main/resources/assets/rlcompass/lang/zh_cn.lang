@@ -18,12 +18,18 @@ gui.rlcompass.dim.end=末地
 
 # 搜索无结果时的聊天提示
 rlcompass.search.notFound=搜索范围内没有找到 %s
+rlcompass.search.notFoundGenerated=%s 只能从已生成的区块里找（冰火模组不保存位置记录）；去新区域探索后再搜
 
 # 结构只在别的维度生成时的聊天提示
 rlcompass.search.wrongDimension=%s 只会在 %s 生成，你当前在 %s
 
 # 搜索进行中的 HUD 提示
 rlcompass.hud.searching=搜索中
+
+# 热门结构快捷入口
+gui.rlcompass.hot=热门结构
+gui.rlcompass.hot.ultra=超稀有
+gui.rlcompass.hot.empty=没有可用的热门结构
 
 # 缓存仓库：指南针给出过的全部结果，支持增删改查
 gui.rlcompass.warehouse=缓存仓库
@@ -43,14 +49,14 @@ rlcompass.teleport.wrongDimension=目标不在当前维度，无法传送
 rlcompass.teleport.unsafe=目标 16 格内没有安全的地表落点（海洋、岩浆或虚空）
 
 # 超稀有结构深度扫描（聊天框播报）
-rlcompass.shivaxi.started=深度扫描已开始：半径 %s 区块（共 %s 个），完成时会在聊天框播报
-rlcompass.shivaxi.running=已有扫描在跑：已扫 %s 个区块、%s 个候选；用 /rlcompass shivaxi cancel 停止
+rlcompass.shivaxi.started=深度扫描已开始（%s）：半径 %s 区块（共 %s 个），完成时会在聊天框播报
+rlcompass.shivaxi.running=已有扫描在跑（%s）：已扫 %s 个区块、%s 个候选；用 /rlcompass scan cancel 停止
 rlcompass.shivaxi.progress=深度扫描：%s / %s 区块，可生成 %s，候选 %s，已用 %s 秒
 rlcompass.shivaxi.candidate=★ 候选 #%s：区块 (%s, %s)，约 (%s, %s) —— 48 格范围内找；已记入缓存仓库
 rlcompass.shivaxi.finished=深度扫描完成：%s 区块，可生成 %s，候选 %s，用时 %s 秒
 rlcompass.shivaxi.none=深度扫描完成：%s 区块，可生成 %s，没有候选，用时 %s 秒（可加大半径再试）
 rlcompass.shivaxi.stopped=深度扫描已停止：%s 区块，可生成 %s，候选 %s，用时 %s 秒
-rlcompass.shivaxi.notRegistered=注意：RC 结构注册表里没有 Shivaxi，这次扫描不可能命中
+rlcompass.shivaxi.notRegistered=注意：RC 结构注册表里没有 %s，这次扫描不可能命中
 rlcompass.shivaxi.unavailable=Recurrent Complex 不可用，无法扫描
 rlcompass.shivaxi.rejected=已排除 %s 个地形不符的位置：%s
 
@@ -58,3 +64,17 @@ rlcompass.shivaxi.rejected=已排除 %s 个地形不符的位置：%s
 gui.rlcompass.radiusValue=半径 %s
 gui.rlcompass.radiusHint=半径越大，搜索越久
 gui.rlcompass.radiusUltraRare=超稀有结构：建议半径 100000，搜索可能需要数分钟
+gui.rlcompass.radiusScanHint=点「搜索」即启动后台深扫，不需要作弊
+rlcompass.shivaxi.firstHit=已找到最近的 %s：共 %s 个候选，用时 %s 秒，扫描已停止
+
+# 深扫（指南针里的异步搜索，不需要作弊）
+gui.rlcompass.cancelScan=取消深扫
+rlcompass.radius.saved=半径已更新成功：%s 格（%s 区块），下次搜索立即使用
+rlcompass.scan.started=深扫已开始：%s，半径 %s 区块；在后台分片执行，可以继续游玩
+rlcompass.scan.hit=深扫找到 %s：(%s, %s)，已设为目标
+rlcompass.scan.miss=深扫完成，半径内没有找到 %s
+rlcompass.scan.missMaxRadius=半径内没有找到 %s。已经扫到最大半径（100000 格），请换一个远的地方再定位吧
+rlcompass.scan.cancelled=已取消深扫：%s
+rlcompass.scan.busy=已有深扫在进行（%s），请先在指南针里取消
+rlcompass.scan.unavailable=无法深扫 %s，请确认 Recurrent Complex 已加载
+rlcompass.scan.cancelling=正在取消深扫…

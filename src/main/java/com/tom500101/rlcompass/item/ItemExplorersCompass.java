@@ -64,11 +64,21 @@ public class ItemExplorersCompass extends Item {
      * player's client. Returns the result for logging, or {@code null} when nothing was found.
      */
     public static StructureResult search(EntityPlayerMP player, String structureId) {
-        return search(player, structureId, null);
+        return search(player, structureId, null, 0);
     }
 
     /** Variant-aware variant used by the picker; {@code variantId} may be null. */
     public static StructureResult search(EntityPlayerMP player, String structureId, String variantId) {
+        return search(player, structureId, variantId, 0);
+    }
+
+    /**
+     * @param radiusBlocks radius the picker showed, or zero to fall back to the server config.
+     *                     The packet carries it so a config reload cannot silently shrink the
+     *                     search after the player dragged the slider.
+     */
+    public static StructureResult search(EntityPlayerMP player, String structureId, String variantId,
+                                         int radiusBlocks) {
         World world = player.getEntityWorld();
         BlockPos origin = player.getPosition();
         int dimension = world.provider.getDimension();
@@ -79,8 +89,9 @@ public class ItemExplorersCompass extends Item {
                     variantId, StructureDimensions.of(structureId, variantId)), player);
             return null;
         }
+        int radius = radiusBlocks > 0 ? radiusBlocks : CompassConfig.searchRadius;
         StructureResult result = StructureLocatorRegistry.get()
-                .findNearest(world, origin, structureId, CompassConfig.searchRadius, variantId);
+                .findNearest(world, origin, structureId, radius, variantId);
         if (result == null) {
             PacketHandler.sendToPlayer(PacketStructureResult.notFound(structureId, dimension, variantId), player);
         } else {

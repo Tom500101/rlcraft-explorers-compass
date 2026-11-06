@@ -199,15 +199,28 @@ public class PacketStructureResult implements IMessage {
                                         dimensionsText(new int[]{message.getDimension()})));
                     } else {
                         ClientCompassState.clear();
+                        // Ice and Fire keeps no position record and its random stream is shared with
+                        // every other feature, so these two can only be found in generated chunks.
+                        // A plain "not found" would read as a broken locator.
+                        String key = isGeneratedOnly(message.getStructureId())
+                                ? "rlcompass.search.notFoundGenerated"
+                                : "rlcompass.search.notFound";
                         // A miss used to be completely silent: the target simply vanished. Say which
                         // structure (and theme, when one was picked) came up empty.
                         Minecraft.getMinecraft().ingameGUI.getChatGUI().printChatMessage(
-                                new TextComponentTranslation("rlcompass.search.notFound",
+                                new TextComponentTranslation(key,
                                         describe(message.getStructureId(), message.getVariantId())));
                     }
                 }
             });
             return null;
+        }
+
+        /** Structures that exist only as blocks on disk, never as a replayable position record. */
+        private static boolean isGeneratedOnly(String structureId) {
+            String canonical = StructureNameUtil.canonical(structureId);
+            return "rlcompass:dragoncave".equals(canonical)
+                    || "rlcompass:dragonroost".equals(canonical);
         }
 
         /** "Ice Roguelike Dungeon" for a themed search, "Village" for a plain one. */

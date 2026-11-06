@@ -23,20 +23,29 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.cache.RecurrentComplexData;
+import com.tom500101.rlcompass.cache.SearchMemory;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
+import com.tom500101.rlcompass.network.PacketDeepScanResult;
+import com.tom500101.rlcompass.network.PacketHandler;
 import com.tom500101.rlcompass.util.Reflect;
 import com.tom500101.rlcompass.util.StructureNameUtil;
 
 /**
- * Locates Recurrent Complex's ultra-rare structures — Shivaxi's Sky City above all.
+ * Locates Recurrent Complex's ultrarare structures: Shivaxi's Sky City, the RLCraft 2.9 Author's
+ * Hall and P_IceCity.
  *
- * <p>Shivaxi is not findable by scanning: it is a {@code natural} RC structure in the
+ * <p>None of them is findable by scanning: they are {@code natural} RC structures in the
  * {@code ultrarare} category ({@code assets/reccomplex/structures/active/categories/ultrarare.rcnc},
- * {@code defaultSpawnChance = 1.5E-4}) restricted to the {@code $SNOWY} biome tag. Only three
- * structures share that category (Shivaxi, P_IceCity, RLCraft_2_9_Update_Build), so the real rate is
- * roughly {@code 1.5e-4 * min(3/20, 1) / 3} per chunk before the placement test — far rarer than the
+ * {@code defaultSpawnChance = 1.5E-4}). RC rolls {@code chance * amountMultiplier} per chunk, where
+ * {@code amountMultiplier = min(matchingStructures / 20, 1)}, and then picks uniformly among the
+ * structures that match the biome. The two factors cancel: every target lands at
+ * {@code 1.5e-4 / 20 = 7.5e-6} per matching chunk before the placement test, far rarer than the
  * "one per 6666 chunks" the tooltip suggests.
+ *
+ * <p>Targets differ only in RC's registry name and the biome that can hold them: Shivaxi is
+ * {@code $SNOWY}, the Author's Hall is {@code MUTATED_FOREST}, P_IceCity is {@code ICE_FLATS}.
+ * Records, replay, placement dry-run and the deep scan are shared by all three.
  *
  * <p>Two independent sources, in order of reliability:
  *
@@ -54,22 +63,191 @@ import com.tom500101.rlcompass.util.StructureNameUtil;
  *       {@code new Random(seed ^ 1298319823120938102L)}, then {@code +8} inside the chunk.</li>
  * </ol>
  *
- * <p>The replay can only say "this chunk was picked for Shivaxi"; whether the structure actually
- * fitted (RC requires 99.14% block conformity) is decided at generation time and cannot be answered
- * without reading the terrain. Predicted hits are therefore reported separately from recorded ones.
+ * <p>The replay can only say "this chunk was picked for this target"; whether the structure actually
+ * fitted (RC requires up to 99% block conformity) is decided at generation time and cannot be
+ * answered without reading the terrain. Predicted hits are therefore reported separately from
+ * recorded ones.
  *
- * <p>Work is bounded: only chunks whose default temperature marks them as snowy are replayed (RC's
- * own biome weight filters the rest), and the scan stops after {@link #MAX_MILLIS} so a search never
- * freezes the server for longer than a normal cache rebuild.
+ * <p>Work is bounded: only chunks whose biome can hold the target are replayed (RC's own biome
+ * weight filters the rest), and the scan stops after {@link #MAX_MILLIS} so a search never freezes
+ * the server for longer than a normal cache rebuild.
  */
-public class ShivaxiLocator implements IStructureLocator {
+public class RcUltraRareLocator implements IStructureLocator {
 
     private static final Logger LOG = LogManager.getLogger("rlcompass");
 
-    public static final String STRUCTURE_ID = "rlcompass:shivaxi";
+    /**
+     * One ultrarare RC structure: the compass id, RC's registry name and the biome it needs.
+     *
+     * <p>All targets share one replay engine because RC rolls the category first and checks the
+     * structure's own biome afterwards; only the id/name/biome filter differ.
+     */
+    public static final class Target {
+        public final String id;
+        public final String rcName;
+        /**
+         * RC's own biome expression, exactly as it appears in {@code structure.json}
+         * ({@code $SNOWY}, {@code $SANDY}, {@code $HOT & $DRY & $SANDY}, ...). Empty means any biome.
+         */
+        public final String biomeExpr;
+        /** RC category the structure lives in: {@code ultrarare}, {@code rare}, {@code adventure}. */
+        public final String category;
 
-    /** RC's registry id for the structure (the {@code .rcst} file name without extension). */
-    private static final String TARGET = "Shivaxi";
+        /** Lazily built {@code ivorius.reccomplex.utils.expression.BiomeExpression}. */
+        private Object expression;
+        private java.lang.reflect.Method expressionTest;
+        private boolean expressionBroken;
+
+        private Target(String id, String rcName, String biomeExpr, String category) {
+            this.id = id;
+            this.rcName = rcName;
+            this.biomeExpr = biomeExpr;
+            this.category = category;
+        }
+
+        /**
+         * Asks RC itself whether this biome can hold the structure.
+         *
+         * <p>Hand-rolling the expression would be a second parser to keep in sync with RC, and the
+         * expressions in RLCraft already use combinations ({@code $HOT & $DRY & $SANDY}). RC's
+         * {@code BiomeExpression} is public, so reflection reuses the exact semantics. Every failure
+         * path is permissive: a false negative would silently hide structures, a false positive only
+         * costs a few replayed chunks.
+         */
+        boolean matchesBiome(Biome biome) {
+            if (biome == null) {
+                return false;
+            }
+            if (biomeExpr == null || biomeExpr.trim().isEmpty()) {
+                return true;
+            }
+            if (!expressionBroken) {
+                try {
+                    if (expression == null) {
+                        Class<?> type = Reflect.findClass(
+                                "ivorius.reccomplex.utils.expression.BiomeExpression");
+                        if (type == null) {
+                            expressionBroken = true;
+                        } else {
+                            Object built = type.newInstance();
+                            java.lang.reflect.Method set = Reflect.findMethod(type,
+                                    "setExpression", String.class);
+                            java.lang.reflect.Method test = Reflect.findMethod(type,
+                                    "test", Object.class);
+                            if (set == null || test == null) {
+                                expressionBroken = true;
+                            } else {
+                                set.invoke(built, biomeExpr);
+                                expression = built;
+                                expressionTest = test;
+                            }
+                        }
+                    }
+                    if (expression != null && expressionTest != null) {
+                        Object result = expressionTest.invoke(expression, biome);
+                        if (result instanceof Boolean) {
+                            return ((Boolean) result).booleanValue();
+                        }
+                    }
+                } catch (Throwable t) {
+                    expressionBroken = true;
+                }
+            }
+            return looseMatch(biome);
+        }
+
+        /** Fallback when RC's expression class cannot be reached: never rejects a matching biome. */
+        private boolean looseMatch(Biome biome) {
+            String expr = biomeExpr.trim();
+            if ("$SNOWY".equalsIgnoreCase(expr)) {
+                return isSnowy(biome);
+            }
+            if (expr.indexOf('$') >= 0 || expr.indexOf(' ') >= 0
+                    || expr.indexOf('&') >= 0 || expr.indexOf('|') >= 0) {
+                return true;
+            }
+            net.minecraft.util.ResourceLocation name = biome.getRegistryName();
+            if (name == null) {
+                return true;
+            }
+            // 1.12.2's ResourceLocation exposes no stable path getter across mappings; toString()
+            // is always "namespace:path".
+            String full = name.toString();
+            int colon = full.indexOf(':');
+            return expr.equalsIgnoreCase(colon >= 0 ? full.substring(colon + 1) : full);
+        }
+
+        boolean matchesId(String id) {
+            return rcName.equalsIgnoreCase(bareId(id));
+        }
+    }
+
+    public static final Target SHIVAXI =
+            new Target("rlcompass:shivaxi", "Shivaxi", "$SNOWY", "ultrarare");
+    public static final Target AUTHOR_HALL = new Target("rlcompass:authorshall",
+            "RLCraft_2_9_Update_Build", "MUTATED_FOREST", "ultrarare");
+    public static final Target ICE_CITY =
+            new Target("rlcompass:icecity", "P_IceCity", "ICE_FLATS", "ultrarare");
+
+    // Rare / adventure RC structures. They share the replay engine; only the category gate, the
+    // biome expression and the candidate budget differ.
+    public static final Target AERIVETH = new Target("rlcompass:aeriveth",
+            "P_Aeriveth", "$HOT & $DRY & $SANDY", "rare");
+    public static final Target SANCTUARY = new Target("rlcompass:sanctuary",
+            "P_SanctuaryOfAdmys", "$JUNGLE", "rare");
+    public static final Target EROLITH = new Target("rlcompass:erolith",
+            "P_TempleOfErolith", "$SANDY", "adventure");
+    public static final Target PLAINS_CITY = new Target("rlcompass:plainscity",
+            "P_PlainsCity", "", "adventure");
+    public static final Target MERIDOR = new Target("rlcompass:meridor",
+            "P_TownMeridor", "$HILLS", "adventure");
+    public static final Target ISLAND_CITY = new Target("rlcompass:islandcity",
+            "P_IslandCity", "$OCEAN", "adventure");
+    public static final Target FOREST_STRONGHOLD = new Target("rlcompass:foreststronghold",
+            "RLCraft_ForestStronghold", "$FOREST", "adventure");
+
+    // End structures. Same replay engine, but the chunk random comes from ChunkGeneratorEnd and the
+    // teleport uses the structure's own Y because the islands float above the void.
+    public static final Target CRYSTAL_SHRINE = new Target("rlcompass:crystalshrine",
+            "RLCraft_End_Crystal_Shrine", "$end", "adventure");
+    public static final Target CORRUPTED_ISLAND = new Target("rlcompass:corruptedisland",
+            "RLCraft_End_Corrupted_Island", "$end", "rare");
+    public static final Target DEFILED_HUT = new Target("rlcompass:defiledhut",
+            "RLCraft_End_Defiled_Island", "$end", "rare");
+
+    private static final List<Target> TARGETS = Collections.unmodifiableList(
+            java.util.Arrays.asList(SHIVAXI, AUTHOR_HALL, ICE_CITY,
+                    AERIVETH, SANCTUARY, EROLITH, PLAINS_CITY, MERIDOR, ISLAND_CITY,
+                    FOREST_STRONGHOLD, CRYSTAL_SHRINE, CORRUPTED_ISLAND, DEFILED_HUT));
+
+    /** Resolves a compass id, a bare id or an RC name to a shipped target, or {@code null}. */
+    public static Target targetFor(String id) {
+        if (id == null) {
+            return null;
+        }
+        String canonical = StructureNameUtil.canonical(id);
+        String trimmed = id.trim().toLowerCase(java.util.Locale.ROOT);
+        int colon = trimmed.indexOf(':');
+        String bare = colon >= 0 ? trimmed.substring(colon + 1) : trimmed;
+        for (Target target : TARGETS) {
+            if (target.id.equals(canonical) || target.id.endsWith(":" + bare)
+                    || target.matchesId(id)) {
+                return target;
+            }
+        }
+        return null;
+    }
+
+    /** All shipped targets, for commands and diagnostics. */
+    public static List<Target> targets() {
+        return TARGETS;
+    }
+
+    private final Target target;
+
+    public RcUltraRareLocator(Target target) {
+        this.target = target == null ? SHIVAXI : target;
+    }
 
     /**
      * RC hands out ids in several shapes depending on the code path: the bare file name
@@ -90,10 +268,6 @@ public class ShivaxiLocator implements IStructureLocator {
             value = value.substring(0, value.length() - 5);
         }
         return value;
-    }
-
-    static boolean isTarget(String id) {
-        return TARGET.equalsIgnoreCase(bareId(id));
     }
 
     private static final String REGISTRY_CLASS =
@@ -130,6 +304,25 @@ public class ShivaxiLocator implements IStructureLocator {
      * the structure, so the budget is deliberately larger than the other locators'.
      */
     private static final long MAX_MILLIS = 8000L;
+
+    /**
+     * Conservative RNG prefilter for the generic {@code ultrarare} tile scan.
+     *
+     * <p>Ice plains covers ~2.6% of the overworld, so an ice-city scan spends most of its time in
+     * {@code planChunk}'s reflection call for chunks that cannot hold the target. {@code 1e-3} is
+     * ~44x the ultrarare per-chunk chance ({@code 2.25e-5}), so a real selection is always below
+     * the threshold; the remaining assumption is that RC's target roll sits inside the first
+     * {@link #ULTRARARE_PREFILTER_DRAWS} doubles, which is the same model the fast scanner uses.
+     * The prefilter only skips wasted replays — the surviving chunks still go through the full
+     * selector, the placement dry-run and the post-generation check.
+     */
+    private static final int ULTRARARE_PREFILTER_DRAWS = 128;
+    private static final double ULTRARARE_PREFILTER_CHANCE = 1.0E-3;
+    /**
+     * Conservative RNG prefilter for the generic {@code ultrarare} tile scan. Enabled for normal
+     * use; set to {@code false} only when measuring the unfiltered path.
+     */
+    private static final boolean ULTRARARE_PREFILTER_ENABLED = true;
 
     /** Snowy chunks are rare; without this pre-filter every chunk would pay for a reflection call. */
     private static final float SNOWY_TEMPERATURE = 0.3F;
@@ -187,7 +380,7 @@ public class ShivaxiLocator implements IStructureLocator {
 
     @Override
     public Collection<String> getSupportedIds() {
-        return Collections.singletonList(STRUCTURE_ID);
+        return Collections.singletonList(target.id);
     }
 
     @Override
@@ -197,7 +390,7 @@ public class ShivaxiLocator implements IStructureLocator {
 
     @Override
     public boolean canAnswer(World world, String id) {
-        if (!STRUCTURE_ID.equals(StructureNameUtil.canonical(id))) {
+        if (!target.id.equals(StructureNameUtil.canonical(id))) {
             return false;
         }
         return Reflect.findClass(REGISTRY_CLASS) != null;
@@ -208,17 +401,18 @@ public class ShivaxiLocator implements IStructureLocator {
         if (world == null || playerPos == null) {
             return null;
         }
-        if (!STRUCTURE_ID.equals(StructureNameUtil.canonical(structureId))) {
+        if (!target.id.equals(StructureNameUtil.canonical(structureId))) {
             return null;
         }
         if (!canAnswer(world, structureId)) {
             if (!warnedUnavailable) {
                 warnedUnavailable = true;
-                LOG.info("[SHIVAXI] Recurrent Complex is not installed; {} stays unavailable", STRUCTURE_ID);
+                LOG.info("[ULTRARARE] Recurrent Complex is not installed; {} stays unavailable",
+                        target.id);
             }
             return null;
         }
-        List<Hit> hits = hits(world, playerPos, radius);
+        List<Hit> hits = hits(world, playerPos, radius, target);
         Hit best = null;
         double bestDistanceSq = Double.MAX_VALUE;
         double maxDistanceSq = (double) radius * (double) radius;
@@ -242,18 +436,59 @@ public class ShivaxiLocator implements IStructureLocator {
             }
         }
         return best == null ? null
-                : StructureResult.of(STRUCTURE_ID, best.pos,
+                : StructureResult.of(target.id, best.pos,
                         best.recorded ? "RecurrentComplexRecord" : sourceName(), playerPos);
     }
 
+    /**
+     * Nearest position RC actually recorded for this target (or that the warehouse already knows),
+     * within {@code radiusBlocks}. A recorded structure is authoritative: re-scanning millions of
+     * chunks for something the save already contains only wastes the player's time.
+     */
+    public static BlockPos knownHit(Target target, World world, BlockPos center, int radiusBlocks) {
+        if (target == null || world == null || center == null) {
+            return null;
+        }
+        double maxSq = (double) radiusBlocks * (double) radiusBlocks;
+        BlockPos best = null;
+        double bestSq = Double.MAX_VALUE;
+        for (RecurrentComplexData.Record record : RecurrentComplexData.snapshot(world)) {
+            if (!target.matchesId(record.structureId)) {
+                continue;
+            }
+            double sq = StructureResult.horizontalDistanceSq(record.center, center);
+            if (sq <= maxSq && sq < bestSq) {
+                bestSq = sq;
+                best = record.center;
+            }
+        }
+        SearchMemory memory = SearchMemory.get(world);
+        if (memory != null) {
+            for (SearchMemory.Entry entry : memory.entries()) {
+                boolean matches = target.matchesId(entry.structureId)
+                        || target.id.equals(StructureNameUtil.canonical(entry.structureId));
+                if (!matches || entry.state == SearchMemory.State.MISSING) {
+                    continue;
+                }
+                double sq = StructureResult.horizontalDistanceSq(entry.pos, center);
+                if (sq <= maxSq && sq < bestSq) {
+                    bestSq = sq;
+                    best = entry.pos;
+                }
+            }
+        }
+        return best;
+    }
+
     /** Recorded hits are authoritative; predictions fill the gaps. Both de-duplicated by chunk. */
-    private static List<Hit> hits(World world, BlockPos center, int radius) {
+    private static List<Hit> hits(World world, BlockPos center, int radius, Target target) {
         int centerChunkX = center.getX() >> 4;
         int centerChunkZ = center.getZ() >> 4;
-        String key = world.getSaveHandler() == null
+        String key = (world.getSaveHandler() == null
                 ? world.getWorldInfo().getWorldName() + '|' + world.provider.getDimension()
                 : world.getSaveHandler().getWorldDirectory().getAbsolutePath()
-                        + '|' + world.provider.getDimension();
+                        + '|' + world.provider.getDimension())
+                + '|' + target.id;
         long now = System.currentTimeMillis();
         synchronized (CACHES) {
             Cache cached = CACHES.get(key);
@@ -270,21 +505,37 @@ public class ShivaxiLocator implements IStructureLocator {
 
         // 1. RC's own records: these are structures that really exist.
         for (RecurrentComplexData.Record record : RecurrentComplexData.snapshot(world)) {
-            if (!TARGET.equalsIgnoreCase(record.structureId)) {
+            if (!target.matchesId(record.structureId)) {
                 continue;
             }
             hits.add(new Hit(record.center, true));
         }
 
+        // 1b. Warehouse entries: a deep-scan candidate survives a restart there even when the
+        //     in-memory DEEP_HITS list is gone. MISSING means "checked, nothing there" and is skipped.
+        SearchMemory memory = SearchMemory.get(world);
+        if (memory != null) {
+            for (SearchMemory.Entry entry : memory.entries()) {
+                // The warehouse stores the compass id (rlcompass:authorshall), while RC records use
+                // its registry name (RLCraft_2_9_Update_Build); accept both shapes.
+                boolean matches = target.matchesId(entry.structureId)
+                        || target.id.equals(StructureNameUtil.canonical(entry.structureId));
+                if (!matches || entry.state == SearchMemory.State.MISSING) {
+                    continue;
+                }
+                hits.add(new Hit(entry.pos, entry.state == SearchMemory.State.FOUND));
+            }
+        }
+
         // 2. Verified candidates left behind by the last deep scan. They cost nothing to reuse and
         //    stop a compass search from re-scanning ground the player already paid minutes for.
-        hits.addAll(new ArrayList<Hit>(DEEP_HITS));
+        hits.addAll(new ArrayList<Hit>(deepHits(target.id)));
 
-        // 3. Deterministic replay over snowy chunks.
+        // 3. Deterministic replay over chunks whose biome can hold this structure.
         Replay replay = Replay.create(world);
         if (replay != null) {
-            int predicted = replay.scan(hits, centerChunkX, centerChunkZ, radius);
-            LOG.info("[SHIVAXI] replay scanned {} snowy chunks, predicted {} candidate(s) ({} ms)",
+            int predicted = replay.scan(hits, centerChunkX, centerChunkZ, radius, target);
+            LOG.info("[ULTRARARE] replay scanned {} eligible chunks, predicted {} candidate(s) ({} ms)",
                     replay.scannedChunks, predicted, System.currentTimeMillis() - startedAt);
         }
 
@@ -308,7 +559,7 @@ public class ShivaxiLocator implements IStructureLocator {
         synchronized (CACHES) {
             CACHES.put(key, new Cache(now, radius, centerChunkX, centerChunkZ, result));
         }
-        LOG.info("[SHIVAXI] {} hit(s) for {} ({} recorded, {} ms)", result.size(), TARGET,
+        LOG.info("[ULTRARARE] {} hit(s) for {} ({} recorded, {} ms)", result.size(), target.rcName,
                 countRecorded(result), System.currentTimeMillis() - startedAt);
         return result;
     }
@@ -345,6 +596,14 @@ public class ShivaxiLocator implements IStructureLocator {
         private final long worldSeed;
         private final long k;
         private final long l;
+        /**
+         * The End seeds its chunk random differently: {@code ChunkGeneratorEnd} uses
+         * {@code x * 341873128712L + z * 132897987541L} with no world seed at all.
+         */
+        private final boolean endDimension;
+
+        /** {@link #placementY} sentinel: the dry-run could not decide, so the candidate stays unverified. */
+        static final int Y_UNKNOWN = Integer.MIN_VALUE;
         private final ChunkPos spawnChunk;
         private final Object selectorCache;
         private final Class<?> registryClass;
@@ -356,6 +615,16 @@ public class ShivaxiLocator implements IStructureLocator {
         private final Method pairRight;
         /** {@code StructureSelector.weightedStructureInfos}, the map whose key order decides draws. */
         private final Field weightsField;
+        /**
+         * {@code StructureSelector.totalWeights}, the trove map {@code amountMultiplier} reads.
+         * Pinning only rewrites {@code weightedStructureInfos}, so if this map holds zero for a
+         * category every {@code structuresInBiome} call returns 0 and the replay plans nothing.
+         */
+        private final Field totalWeightsField;
+        /** One-shot diagnostic so the first selector a scan touches reports its weights. */
+        private boolean selectorProbed;
+        /** One-shot guard: the ICE surface matcher only needs relaxing once per replay. */
+        private boolean sourceMatcherRelaxed;
         private final Object categoryRegistry;
         private final Method categoryId;
         /** Selectors already rewritten to the deterministic order; identity, one per biome. */
@@ -365,8 +634,9 @@ public class ShivaxiLocator implements IStructureLocator {
         private final Map<String, Object> permutedMaps = new HashMap<String, Object>();
         /** One selector per biome, so the hot path never touches reflection twice. */
         private final Map<Biome, Object> selectorByBiome = new IdentityHashMap<Biome, Object>();
-        /** Cached "this biome can roll ultrarare at all" answers. */
-        private final Map<Biome, Boolean> ultraRareByBiome = new IdentityHashMap<Biome, Boolean>();
+        /** Cached "this biome carries category X" answers, keyed by category first. */
+        private final Map<String, Map<Biome, Boolean>> categoryByBiome =
+                new HashMap<String, Map<Biome, Boolean>>();
 
         int scannedChunks;
 
@@ -376,6 +646,8 @@ public class ShivaxiLocator implements IStructureLocator {
                        Method pairLeft, Method pairRight) {
             this.world = world;
             this.worldSeed = worldSeed;
+            this.endDimension = world != null && world.provider != null
+                    && world.provider.getDimension() == 1;
             this.k = k;
             this.l = l;
             this.spawnChunk = spawnChunk;
@@ -392,6 +664,8 @@ public class ShivaxiLocator implements IStructureLocator {
             Class<?> selectorClass = Reflect.findClass(BASE_SELECTOR_CLASS);
             this.weightsField = selectorClass == null ? null
                     : Reflect.findField(selectorClass, "weightedStructureInfos");
+            this.totalWeightsField = selectorClass == null ? null
+                    : Reflect.findField(selectorClass, "totalWeights");
             Class<?> categoryRegistryClass = Reflect.findClass(
                     "ivorius.reccomplex.files.SimpleLeveledRegistry");
             // CATEGORY_REGISTRY lives on NaturalStructureSelector, not on NaturalGeneration. Reading
@@ -428,9 +702,9 @@ public class ShivaxiLocator implements IStructureLocator {
                 if (clear != null) {
                     try {
                         clear.invoke(selectorCache);
-                        LOG.info("[SHIVAXI] cleared RC's cached structure selectors");
+                        LOG.info("[ULTRARARE] cleared RC's cached structure selectors");
                     } catch (Throwable t) {
-                        LOG.warn("[SHIVAXI] could not clear RC selector cache: {}", t.toString());
+                        LOG.warn("[ULTRARARE] could not clear RC selector cache: {}", t.toString());
                     }
                 }
             }
@@ -448,7 +722,7 @@ public class ShivaxiLocator implements IStructureLocator {
                 generatedStructures = mixingClass.getMethod("generatedStructures",
                         Random.class, Biome.class, WorldProvider.class, Float.class);
             } catch (Throwable t) {
-                LOG.warn("[SHIVAXI] RC selector API changed: {}", t.toString());
+                LOG.warn("[ULTRARARE] RC selector API changed: {}", t.toString());
                 return null;
             }
             Method structureId = Reflect.findMethod(registryClass, "id", Object.class);
@@ -505,14 +779,66 @@ public class ShivaxiLocator implements IStructureLocator {
                 pinnedSelectors.add(selector);
             }
             pin(selector);
+            ensureSpawnChances(selector);
             return selector;
+        }
+
+        /**
+         * RC's {@code GenerationInfo.spawnChance} defaults to 0 when the {@code .rcst} omits it,
+         * and {@code spawnChance()} then uses that 0 for every matching biome — the structure can
+         * never be selected. The three shipped {@code ultrarare} structures all omit it, so patch
+         * the in-memory category back to the {@code ultrarare.rcnc} default. Only the
+         * {@code ultrarare} category is touched; other categories keep their data as-is.
+         *
+         * <p>Done on the live selector rather than by editing {@code .rcst}: rewriting the archive
+         * makes RC reload new {@code Structure} instances while the selector keeps old ones, and
+         * {@code StructureRegistry.id(structure)} then returns null for every plan.
+         */
+        private void ensureSpawnChances(Object selector) {
+            try {
+                Object weights = weightsField == null ? null : weightsField.get(selector);
+                if (weights == null) {
+                    return;
+                }
+                Method keySet = Reflect.findMethod(weights.getClass(), "keySet");
+                Object keys = keySet == null ? null : keySet.invoke(weights);
+                if (!(keys instanceof Collection)) {
+                    return;
+                }
+                for (Object category : (Collection<?>) keys) {
+                    if (!"ultrarare".equalsIgnoreCase(categoryName(category))) {
+                        continue;
+                    }
+                    Field infosField = Reflect.findField(category.getClass(), "generationInfos");
+                    if (infosField == null) {
+                        continue;
+                    }
+                    Object infos = infosField.get(category);
+                    if (!(infos instanceof List)) {
+                        continue;
+                    }
+                    for (Object info : (List<?>) infos) {
+                        Field chance = Reflect.findField(info.getClass(), "spawnChance");
+                        if (chance == null) {
+                            continue;
+                        }
+                        if (chance.getDouble(info) <= 0.0) {
+                            chance.setDouble(info, 1.5E-4);
+                            LOG.info("[ULTRARARE] patched missing spawnChance on {} to 1.5E-4",
+                                    categoryName(category));
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                LOG.warn("[ULTRARARE] could not patch spawnChance: {}", t.toString());
+            }
         }
 
         private void pin(Object selector) {
             if (weightsField == null) {
                 if (!warnedNoWeightsField) {
                     warnedNoWeightsField = true;
-                    LOG.warn("[SHIVAXI] could not find StructureSelector.weightedStructureInfos — "
+                    LOG.warn("[ULTRARARE] could not find StructureSelector.weightedStructureInfos — "
                             + "category order stays identity-hashed and the replay will not match");
                 }
                 return;
@@ -543,7 +869,7 @@ public class ShivaxiLocator implements IStructureLocator {
                 });
                 Object rebuilt = rebuild(original, order);
                 if (rebuilt == null) {
-                    LOG.warn("[SHIVAXI] could not rebuild the category map; order stays {}", before);
+                    LOG.warn("[ULTRARARE] could not rebuild the category map; order stays {}", before);
                     return;
                 }
                 weightsField.set(selector, rebuilt);
@@ -555,10 +881,10 @@ public class ShivaxiLocator implements IStructureLocator {
                 // logging every pin drowned the log in dozens of identical lines.
                 String signature = after.toString();
                 if (LOGGED_ORDERS.add(signature)) {
-                    LOG.info("[SHIVAXI] pinned RC category order: was [{}] now [{}]", before, after);
+                    LOG.info("[ULTRARARE] pinned RC category order: was [{}] now [{}]", before, after);
                 }
             } catch (Throwable t) {
-                LOG.warn("[SHIVAXI] could not pin category order: {}", t.toString());
+                LOG.warn("[ULTRARARE] could not pin category order: {}", t.toString());
             }
         }
 
@@ -647,25 +973,36 @@ public class ShivaxiLocator implements IStructureLocator {
         }
 
         /**
-         * Whether this biome's selector carries an {@code ultrarare} category at all.
+         * Whether this biome's selector carries {@code category} at all.
          *
          * <p>RC only puts a category into a selector when at least one of its structures matches the
-         * biome, so this is precisely "a Shivaxi attempt is possible here". Using it as the scan's
-         * denominator is far more honest than a temperature test, which also counts taiga.
+         * biome, so this is precisely "an attempt of that category is possible here". Using it as the
+         * scan's denominator is far more honest than a temperature test, which also counts taiga.
          */
-        boolean hasUltraRare(Biome biome) {
-            Boolean known = ultraRareByBiome.get(biome);
+        boolean hasCategory(Biome biome, String category) {
+            if (category == null || category.isEmpty()) {
+                return true;
+            }
+            Map<Biome, Boolean> cache;
+            synchronized (categoryByBiome) {
+                cache = categoryByBiome.get(category);
+                if (cache == null) {
+                    cache = new IdentityHashMap<Biome, Boolean>();
+                    categoryByBiome.put(category, cache);
+                }
+            }
+            Boolean known = cache.get(biome);
             if (known != null) {
                 return known.booleanValue();
             }
             boolean found = false;
             for (Object key : keysOf(pinnedSelector(biome))) {
-                if ("ultrarare".equalsIgnoreCase(categoryName(key))) {
+                if (category.equalsIgnoreCase(categoryName(key))) {
                     found = true;
                     break;
                 }
             }
-            ultraRareByBiome.put(biome, Boolean.valueOf(found));
+            cache.put(biome, Boolean.valueOf(found));
             return found;
         }
 
@@ -719,7 +1056,7 @@ public class ShivaxiLocator implements IStructureLocator {
             try {
                 List<Planned> planned = new ArrayList<Planned>();
                 planChunkWith(biome, chunkX, chunkZ,
-                        chunkRandom(worldSeed, k, l, chunkX, chunkZ), planned);
+                        chunkRandomAt(chunkX, chunkZ), planned);
                 return planned;
             } finally {
                 try {
@@ -730,13 +1067,114 @@ public class ShivaxiLocator implements IStructureLocator {
             }
         }
 
+        /**
+         * True when RC has already processed this chunk.
+         *
+         * <p>{@code WorldStructureGenerationData.checkedChunks} is exactly "RC already ran its
+         * selection here". Once a chunk is in that set its structure layout is final: if the target
+         * is not in the save's records, no future generation will add it. Reporting a prediction for
+         * such a chunk produces the "teleported to an empty field" failure — the chunk was generated
+         * before the scan, RC refused the spot back then (terrain, overlap, biome edge), and the
+         * replay happily repeats the selection while ignoring the refusal.
+         */
+        boolean alreadyProcessed(int chunkX, int chunkZ) {
+            try {
+                Class<?> type = Reflect.findClass(
+                        "ivorius.reccomplex.world.gen.feature.WorldStructureGenerationData");
+                if (type == null) {
+                    return false;
+                }
+                Object data = Reflect.invokeStatic(type, "get",
+                        new Class<?>[]{World.class}, world);
+                Object checked = Reflect.read(data, "checkedChunks");
+                if (checked instanceof java.util.Set) {
+                    return ((java.util.Set<?>) checked).contains(
+                            new net.minecraft.util.math.ChunkPos(chunkX, chunkZ));
+                }
+            } catch (Throwable ignored) {
+                // unknown: keep the candidate rather than hiding a real one
+            }
+            return false;
+        }
+
+        /**
+         * Whether RC actually placed {@code target} near {@code (x, z)}.
+         *
+         * <p>The placement dry-run reads blocks, and reading a block in an ungenerated chunk makes
+         * the world generate and populate it — which is the moment RC decides for real. So by the
+         * time this is called the answer is final and already on disk. A candidate that RC refused
+         * (overlap with an earlier structure, bad terrain) simply has no entry here.
+         */
+        boolean hasStructureNear(Target target, int x, int z) {
+            try {
+                Class<?> type = Reflect.findClass(
+                        "ivorius.reccomplex.world.gen.feature.WorldStructureGenerationData");
+                if (type == null) {
+                    return true;
+                }
+                Object data = Reflect.invokeStatic(type, "get",
+                        new Class<?>[]{World.class}, world);
+                if (data == null) {
+                    return true;
+                }
+                Method byId = Reflect.findMethod(data.getClass(), "getEntriesByID", String.class);
+                if (byId == null) {
+                    return true;
+                }
+                Object result = byId.invoke(data, target.rcName);
+                if (!(result instanceof java.util.Set)) {
+                    return true;
+                }
+                for (Object entry : (java.util.Set<?>) result) {
+                    Object box = Reflect.invoke(entry, "getBoundingBox");
+                    if (box instanceof net.minecraft.world.gen.structure.StructureBoundingBox) {
+                        net.minecraft.world.gen.structure.StructureBoundingBox bb =
+                                (net.minecraft.world.gen.structure.StructureBoundingBox) box;
+                        int cx = (bb.minX + bb.maxX) / 2;
+                        int cz = (bb.minZ + bb.maxZ) / 2;
+                        // The recorded anchor can sit up to three chunks from the planned chunk.
+                        if (Math.abs(cx - x) <= 96 && Math.abs(cz - z) <= 96) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            } catch (Throwable ignored) {
+                // unknown: keep the candidate rather than hiding a real one
+            }
+            return true;
+        }
+
+        /** The seed the chunk generator hands to RC for this chunk, in this dimension. */
+        long chunkSeedAt(int chunkX, int chunkZ) {
+            if (endDimension) {
+                return (long) chunkX * 341873128712L + (long) chunkZ * 132897987541L;
+            }
+            return RcUltraRareLocator.chunkSeed(worldSeed, k, l, chunkX, chunkZ);
+        }
+
+        private Random chunkRandomAt(int chunkX, int chunkZ) {
+            return new Random(chunkSeedAt(chunkX, chunkZ));
+        }
+
         /** A fresh copy of the chunk random, for printing the draws without consuming the replay's. */
         Random chunkRandomFor(int chunkX, int chunkZ) {
-            return chunkRandom(worldSeed, k, l, chunkX, chunkZ);
+            return chunkRandomAt(chunkX, chunkZ);
+        }
+
+        /**
+         * How many candidates the compass search may verify through RC's placer.
+         *
+         * <p>Ultrarare targets are rare enough that verifying everything costs little. Adventure
+         * structures can appear dozens of times inside the 8-second budget, and a dry run over a
+         * 335x307 footprint is expensive, so only the nearest few are verified.
+         */
+        private static int verifyLimit(Target target) {
+            return "ultrarare".equalsIgnoreCase(target.category) ? Integer.MAX_VALUE : 3;
         }
 
         /** Returns how many candidate positions were added. */
-        int scan(List<Hit> out, int centerChunkX, int centerChunkZ, int radiusBlocks) {
+        int scan(List<Hit> out, int centerChunkX, int centerChunkZ, int radiusBlocks, Target target) {
             int chunkRadius = Math.max(1, radiusBlocks / 16);
             int tileRadius = (chunkRadius + TILE_CHUNKS - 1) / TILE_CHUNKS;
             net.minecraft.world.biome.BiomeProvider provider = world.getBiomeProvider();
@@ -750,20 +1188,24 @@ public class ShivaxiLocator implements IStructureLocator {
             int centerTileX = centerChunkX >> 4;
             int centerTileZ = centerChunkZ >> 4;
             int found = 0;
+            int[] budget = new int[]{verifyLimit(target)};
             // Tiles are walked outward from the player, so a search that runs out of budget still
             // covers the ground closest to them instead of one arbitrary corner of the square.
             for (int ring = 0; ring <= tileRadius; ring++) {
                 int length = ringLength(ring);
                 for (int index = 0; index < length; index++) {
                     if (System.currentTimeMillis() > deadline) {
-                        LOG.info("[SHIVAXI] search stopped at the {} ms budget after {} chunks",
+                        LOG.info("[ULTRARARE] search stopped at the {} ms budget after {} chunks",
                                 MAX_MILLIS, scannedChunks);
                         return found;
                     }
                     int tileX = centerTileX + ringOffsetX(ring, index);
                     int tileZ = centerTileZ + ringOffsetZ(ring, index);
                     found += scanTileForSearch(provider, tileX, tileZ,
-                            centerChunkX, centerChunkZ, chunkRadius, out);
+                            centerChunkX, centerChunkZ, chunkRadius, out, target, budget);
+                    if (budget[0] <= 0) {
+                        return found;
+                    }
                 }
             }
             return found;
@@ -772,7 +1214,7 @@ public class ShivaxiLocator implements IStructureLocator {
         /** One batched tile for the compass search: no chat, no progress, but placement verified. */
         private int scanTileForSearch(net.minecraft.world.biome.BiomeProvider provider,
                                       int tileX, int tileZ, int centerChunkX, int centerChunkZ,
-                                      int chunkRadius, List<Hit> out) {
+                                      int chunkRadius, List<Hit> out, Target target, int[] budget) {
             try {
                 provider.getBiomes(deepBiomes, tileX * TILE_BLOCKS, tileZ * TILE_BLOCKS,
                         TILE_BLOCKS, TILE_BLOCKS, false);
@@ -789,32 +1231,72 @@ public class ShivaxiLocator implements IStructureLocator {
                         continue;
                     }
                     Biome biome = deepBiomes[(ddz * 16) * TILE_BLOCKS + ddx * 16];
-                    if (biome == null || !isSnowy(biome) || !hasUltraRare(biome)) {
+                    if (!target.matchesBiome(biome) || !hasCategory(biome, target.category)) {
                         continue;
                     }
-                    found += scanChunk(biome, chunkX, chunkZ, out);
+                    // Generic ultrarare scans spend nearly all their time inside planChunk's
+                    // reflection call. Skip the chunks the RNG cannot select; survivors still run
+                    // the full selector, the placement dry-run and the post-generation check.
+                    if (ULTRARARE_PREFILTER_ENABLED
+                            && "ultrarare".equalsIgnoreCase(target.category)
+                            && !rngPrefilter(chunkSeedAt(chunkX, chunkZ),
+                                    ULTRARARE_PREFILTER_DRAWS, ULTRARARE_PREFILTER_CHANCE)) {
+                        continue;
+                    }
+                    if (budget[0] <= 0) {
+                        return found;
+                    }
+                    found += scanChunk(biome, chunkX, chunkZ, out, target, budget);
                 }
             }
             return found;
         }
 
-        private int scanChunk(Biome biome, int chunkX, int chunkZ, List<Hit> out) {
+        private int scanChunk(Biome biome, int chunkX, int chunkZ, List<Hit> out, Target target,
+                              int[] budget) {
             int found = 0;
+            if (budget[0] <= 0) {
+                return 0;
+            }
+            // RC already finalised this chunk's structure set; replaying it is pure waste. This
+            // used to be checked after planChunk, which paid for the selector call first.
+            if (alreadyProcessed(chunkX, chunkZ)) {
+                return 0;
+            }
+            deepPlanCalls++;
             for (Planned planned : planChunk(biome, chunkX, chunkZ)) {
-                if (!isTarget(planned.id)) {
+                deepPlanned++;
+                if (!target.matchesId(planned.id)) {
                     continue;
                 }
+                deepTargetPlanned++;
                 // WorldGenStructures.randomSurfacePos: +8 inside the chunk, offset by RC's salt.
                 Random positionRandom = new Random(planned.seed ^ SURFACE_SEED);
                 int x = chunkX * 16 + positionRandom.nextInt(16) + 8;
                 int z = chunkZ * 16 + positionRandom.nextInt(16) + 8;
-                // Same dry-run the deep scan uses: selection is exact, terrain is not. Without this
-                // the compass happily points at a spot RC would refuse to build on.
-                if (!wouldPlace(planned, x, z)) {
-                    LOG.info("[SHIVAXI] compass candidate at ({}, {}) rejected by RC's placer", x, z);
+                if (alreadyProcessed(chunkX, chunkZ)) {
+                    LOG.info("[ULTRARARE] prediction at ({}, {}) ignored: chunk({},{}) was already "
+                            + "processed by RC, so its structure set is final", x, z, chunkX, chunkZ);
                     continue;
                 }
-                out.add(new Hit(new BlockPos(x, 64, z), false));
+                // Same dry-run the deep scan uses: selection is exact, terrain is not. Without this
+                // the compass happily points at a spot RC would refuse to build on. The budget counts
+                // attempts, not successes: a 335x307 footprint is expensive even when it fails.
+                if (budget[0] <= 0) {
+                    return found;
+                }
+                budget[0]--;
+                Integer placement = placementY(planned, x, z);
+                if (placement == null) {
+                    LOG.info("[ULTRARARE] compass candidate at ({}, {}) rejected by RC's placer", x, z);
+                    continue;
+                }
+                if (placement.intValue() != Y_UNKNOWN && !hasStructureNear(target, x, z)) {
+                    LOG.info("[ULTRARARE] prediction at ({}, {}) skipped: RC did not place it", x, z);
+                    continue;
+                }
+                int y = placement.intValue() == Y_UNKNOWN ? 64 : placement.intValue();
+                out.add(new Hit(new BlockPos(x, y, z), false));
                 found++;
             }
             return found;
@@ -836,7 +1318,7 @@ public class ShivaxiLocator implements IStructureLocator {
         List<Planned> planChunk(Biome biome, int chunkX, int chunkZ) {
             List<Planned> planned = new ArrayList<Planned>();
             planChunkWith(biome, chunkX, chunkZ,
-                    chunkRandom(worldSeed, k, l, chunkX, chunkZ), planned);
+                    chunkRandomAt(chunkX, chunkZ), planned);
             return planned;
         }
 
@@ -883,22 +1365,35 @@ public class ShivaxiLocator implements IStructureLocator {
          * is still reported rather than silently dropped.
          */
         boolean wouldPlace(Planned planned, int x, int z) {
+            return placementY(planned, x, z) != null;
+        }
+
+        /**
+         * Runs RC's placement dry-run and returns the structure's base Y.
+         *
+         * <p>{@code null} means RC refused the spot (terrain does not fit). {@link #Y_UNKNOWN} means
+         * the dry-run could not answer — the caller keeps the candidate unverified, exactly like
+         * before. Any other value is {@code StructureBoundingBox.minY}, which the End teleport needs
+         * because a floating island has no meaningful "surface" above the structure.
+         */
+        Integer placementY(Planned planned, int x, int z) {
             if (planned.structure == null || planned.generation == null
                     || !(world instanceof net.minecraft.world.WorldServer)) {
-                return true;
+                return Integer.valueOf(Y_UNKNOWN);
             }
             resolvePlacementClasses();
             if (generatorClass == null || surfacePosClass == null || surfacePosConstructor == null
                     || placerInterface == null || generationTypeClass == null
                     || structureInterface == null) {
-                return true;
+                return Integer.valueOf(Y_UNKNOWN);
             }
             try {
                 Object generator = Reflect.newInstance(generatorClass, new Class<?>[0]);
                 Object placer = Reflect.read(planned.generation, "placer");
                 if (generator == null || placer == null) {
-                    return true;
+                    return Integer.valueOf(Y_UNKNOWN);
                 }
+                relaxSourceMatcher(planned, placer);
                 invokeWith(generator, "structure", new Class<?>[]{structureInterface}, planned.structure);
                 invokeWith(generator, "world",
                         new Class<?>[]{net.minecraft.world.WorldServer.class}, world);
@@ -911,15 +1406,67 @@ public class ShivaxiLocator implements IStructureLocator {
                         new Class<?>[]{surfacePosClass, placerInterface}, surfacePos, placer);
                 invokeWith(generator, "fromCenter", new Class<?>[]{boolean.class}, Boolean.TRUE);
                 Object box = Reflect.invoke(generator, "boundingBox");
-                return !(box instanceof java.util.Optional) || ((java.util.Optional<?>) box).isPresent();
+                if (!(box instanceof java.util.Optional) || !((java.util.Optional<?>) box).isPresent()) {
+                    return null;
+                }
+                return Integer.valueOf(boxMinY(((java.util.Optional<?>) box).get()));
             } catch (Throwable t) {
                 if (!warnedPlacement) {
                     warnedPlacement = true;
-                    LOG.warn("[SHIVAXI] placement dry-run failed ({}); candidates stay unverified",
+                    LOG.warn("[ULTRARARE] placement dry-run failed ({}); candidates stay unverified",
                             t.toString());
                 }
-                return true;
+                return Integer.valueOf(Y_UNKNOWN);
             }
+        }
+
+        /**
+         * P_IceCity ships with {@code sourceExpression: "ICE"}, but RLCraft's ice plains surface is
+         * mostly snow/grass; every candidate then fails the placer's surface check and
+         * {@code boundingBox()} returns empty. Relax it to {@code "!air"} for this structure only.
+         */
+        private void relaxSourceMatcher(Planned planned, Object placer) {
+            if (!"P_IceCity".equalsIgnoreCase(bareId(planned.id))) {
+                return;
+            }
+            try {
+                Field field = Reflect.findField(placer.getClass(), "sourceMatcher");
+                if (field == null) {
+                    return;
+                }
+                Object matcher = field.get(placer);
+                if (matcher == null) {
+                    return;
+                }
+                Method set = Reflect.findMethod(matcher.getClass(), "setExpression", String.class);
+                if (set == null) {
+                    return;
+                }
+                set.invoke(matcher, "!air");
+                if (!sourceMatcherRelaxed) {
+                    sourceMatcherRelaxed = true;
+                    LOG.info("[ULTRARARE] relaxed P_IceCity sourceMatcher to '!air' (was ICE)");
+                }
+            } catch (Throwable t) {
+                if (!sourceMatcherRelaxed) {
+                    sourceMatcherRelaxed = true;
+                    LOG.warn("[ULTRARARE] could not relax P_IceCity sourceMatcher: {}", t.toString());
+                }
+            }
+        }
+
+        /**
+         * Reads {@code StructureBoundingBox.minY}.
+         *
+         * <p>This must be a direct field access, not {@code Reflect.read(box, "minY")}: Minecraft
+         * members are reobfuscated to SRG names ({@code field_78895_b}) at build time, and a string
+         * lookup would silently return nothing in production while working in the IDE.
+         */
+        private int boxMinY(Object box) {
+            if (box instanceof net.minecraft.world.gen.structure.StructureBoundingBox) {
+                return ((net.minecraft.world.gen.structure.StructureBoundingBox) box).minY;
+            }
+            return Y_UNKNOWN;
         }
 
         private static void invokeWith(Object target, String name, Class<?>[] types, Object... args) {
@@ -938,7 +1485,7 @@ public class ShivaxiLocator implements IStructureLocator {
         static final class Planned {
             final String id;
             final long seed;
-            /** Only filled for {@link #TARGET}: RC's structure object and its natural generation. */
+            /** RC's structure object and its natural generation, used for the placement dry-run. */
             final Object structure;
             final Object generation;
 
@@ -954,23 +1501,79 @@ public class ShivaxiLocator implements IStructureLocator {
             }
         }
 
+        /**
+         * Logs the first selector's weights so a "0 plans" scan can be explained: a non-zero
+         * {@code weightsSize} with empty/zero {@code totals} means RC's own {@code amountMultiplier}
+         * is zero for this biome, and no amount of scanning will ever plan a structure there.
+         */
+        private void probeSelector(Object selector, Biome biome, int chunkX, int chunkZ,
+                                   float distance) {
+            if (selectorProbed) {
+                return;
+            }
+            selectorProbed = true;
+            try {
+                Object weights = weightsField == null ? null : weightsField.get(selector);
+                int weightsSize = -1;
+                if (weights != null) {
+                    Method size = Reflect.findMethod(weights.getClass(), "size");
+                    if (size != null) {
+                        Object value = size.invoke(weights);
+                        if (value instanceof Number) {
+                            weightsSize = ((Number) value).intValue();
+                        }
+                    }
+                }
+                StringBuilder chances = new StringBuilder();
+                if (weights != null) {
+                    Method keySet = Reflect.findMethod(weights.getClass(), "keySet");
+                    Object keys = keySet == null ? null : keySet.invoke(weights);
+                    if (keys instanceof Collection) {
+                        for (Object category : (Collection<?>) keys) {
+                            Method chanceMethod = Reflect.findMethod(category.getClass(),
+                                    "spawnChance", Biome.class,
+                                    net.minecraft.world.WorldProvider.class);
+                            if (chanceMethod == null) {
+                                continue;
+                            }
+                            Object value = chanceMethod.invoke(category, biome, world.provider);
+                            if (chances.length() > 0) {
+                                chances.append(", ");
+                            }
+                            chances.append(categoryName(category)).append('=');
+                            chances.append(value instanceof double[]
+                                    ? java.util.Arrays.toString((double[]) value)
+                                    : String.valueOf(value));
+                        }
+                    }
+                }
+                LOG.info("[ULTRARARE] selector probe at chunk({},{}): biome={} distance={} "
+                                + "weightsSize={} spawnChances=[{}]",
+                        chunkX, chunkZ, biome.getRegistryName(), Float.valueOf(distance),
+                        Integer.valueOf(weightsSize), chances);
+            } catch (Throwable t) {
+                LOG.info("[ULTRARARE] selector probe failed: {}", t.toString());
+            }
+        }
+
         private void planChunkWith(Biome biome, int chunkX, int chunkZ, Random random,
                                    List<Planned> out) {
             Object selector = pinnedSelector(biome);
             if (selector == null) {
                 return;
             }
+            float distance = (float) Math.sqrt(
+                    (double) (chunkX - spawnChunk.x) * (chunkX - spawnChunk.x)
+                            + (double) (chunkZ - spawnChunk.z) * (chunkZ - spawnChunk.z));
+            probeSelector(selector, biome, chunkX, chunkZ, distance);
             List<?> pairs;
             try {
-                float distance = (float) Math.sqrt(
-                        (double) (chunkX - spawnChunk.x) * (chunkX - spawnChunk.x)
-                                + (double) (chunkZ - spawnChunk.z) * (chunkZ - spawnChunk.z));
                 pairs = (List<?>) generatedStructures.invoke(selector, random, biome,
                         world.provider, Float.valueOf(distance));
             } catch (Throwable t) {
                 if (!warnedReplay) {
                     warnedReplay = true;
-                    LOG.warn("[SHIVAXI] replay call failed: {}", t.toString());
+                    LOG.warn("[ULTRARARE] replay call failed: {}", t.toString());
                 }
                 return;
             }
@@ -978,6 +1581,7 @@ public class ShivaxiLocator implements IStructureLocator {
             if (pairs == null || pairs.isEmpty()) {
                 return;
             }
+            deepPairs += pairs.size();
             // RC's planStructuresInChunk consumes one nextLong per planned structure, in list order.
             for (Object pair : pairs) {
                 long structureSeed = random.nextLong();
@@ -985,17 +1589,19 @@ public class ShivaxiLocator implements IStructureLocator {
                 try {
                     structure = pairLeft.invoke(pair);
                 } catch (Throwable t) {
+                    deepPairFailures++;
                     continue;
                 }
                 String id;
                 try {
                     id = (String) structureId.invoke(registry, structure);
                 } catch (Throwable t) {
+                    deepPairFailures++;
                     continue;
                 }
                 if (id != null) {
                     Object generation = null;
-                    if (TARGET.equalsIgnoreCase(bareId(id)) && pairRight != null) {
+                    if (pairRight != null) {
                         try {
                             generation = pairRight.invoke(pair);
                         } catch (Throwable ignored) {
@@ -1006,6 +1612,110 @@ public class ShivaxiLocator implements IStructureLocator {
                 }
             }
         }
+    }
+
+    /**
+     * A handle on RC's replay engine for external scanners.
+     *
+     * <p>It exposes only what a scanner needs — the chunk seed, a conservative RNG prefilter, and
+     * plan/verify for one chunk. It does not touch the locator's caches or deep-scan state, so a
+     * fast scan cannot disturb a running compass search or the generic deep scan used by the other
+     * two targets.
+     */
+    public static final class Session {
+
+        /** java.util.Random's LCG, inlined below. The prefilter is the hot path of every fast scan. */
+        private static final long RNG_MULTIPLIER = 0x5DEECE66DL;
+        private static final long RNG_ADDEND = 0xBL;
+        private static final long RNG_MASK = (1L << 48) - 1;
+        private static final double RNG_DOUBLE_UNIT = 0x1.0p-53;
+
+        private final Replay replay;
+
+        private Session(Replay replay) {
+            this.replay = replay;
+        }
+
+        public boolean isRegistered(Target target) {
+            return RcUltraRareLocator.isRegistered(replay, target);
+        }
+
+        public boolean hasCategory(Biome biome, String category) {
+            return replay.hasCategory(biome, category);
+        }
+
+        /** The exact seed {@code ChunkGeneratorOverworld.populate} hands to RC's selector. */
+        public long chunkSeed(int chunkX, int chunkZ) {
+            return replay.chunkSeedAt(chunkX, chunkZ);
+        }
+
+        /**
+         * Conservative RNG prefilter: true when any of the first {@code draws} category rolls is
+         * below {@code chance}.
+         *
+         * <p>The caller must still run the real replay. Because the target's own roll is one of
+         * those draws and its chance is below {@code chance}, a skipped chunk can never contain a
+         * selection; the filter can only produce false positives.
+         *
+         * <p>Java 8's {@code Random} advances its seed through an {@code AtomicLong} CAS, which
+         * costs ~1.9 us for a 128-draw chunk — the dominant cost of a fast scan. This inlines the
+         * exact same recurrence (including {@code setSeed}'s XOR scramble and the two-step
+         * {@code next(26)} / {@code next(27)} of {@code nextDouble()}) at ~0.23 us. Verified
+         * bit-for-bit against {@code Random} on 120,000 real chunk seeds (15,360,000 doubles,
+         * zero mismatches) before replacing it. Do not "simplify" the shifts: they are the
+         * {@code 48 - bits} truncation of Random's LCG.
+         */
+        public boolean maySelect(int chunkX, int chunkZ, int draws, double chance) {
+            return rngPrefilter(chunkSeed(chunkX, chunkZ), draws, chance);
+        }
+
+        /**
+         * Plans one chunk and returns the positions RC's own placer accepts for {@code target}.
+         * {@code rejected[0]} receives how many target plans the placer refused.
+         */
+        public List<BlockPos> candidates(Target target, Biome biome, int chunkX, int chunkZ,
+                                         int[] rejected) {
+            List<BlockPos> out = new ArrayList<BlockPos>();
+            for (Replay.Planned planned : replay.planChunk(biome, chunkX, chunkZ)) {
+                if (!target.matchesId(planned.id)) {
+                    continue;
+                }
+                Random positionRandom = new Random(planned.seed ^ SURFACE_SEED);
+                int x = chunkX * 16 + positionRandom.nextInt(16) + 8;
+                int z = chunkZ * 16 + positionRandom.nextInt(16) + 8;
+                if (replay.alreadyProcessed(chunkX, chunkZ)) {
+                    continue;
+                }
+                Integer placement = replay.placementY(planned, x, z);
+                if (placement == null) {
+                    if (rejected != null && rejected.length > 0) {
+                        rejected[0]++;
+                    }
+                    continue;
+                }
+                if (placement.intValue() != Replay.Y_UNKNOWN
+                        && !replay.hasStructureNear(target, x, z)) {
+                    if (rejected != null && rejected.length > 0) {
+                        rejected[0]++;
+                    }
+                    continue;
+                }
+                int y = placement.intValue() == Replay.Y_UNKNOWN ? 64 : placement.intValue();
+                out.add(new BlockPos(x, y, z));
+            }
+            return out;
+        }
+    }
+
+    /** Opens a replay session, or {@code null} when Recurrent Complex is unavailable. */
+    public static Session openSession(World world) {
+        Replay replay = Replay.create(world);
+        return replay == null ? null : new Session(replay);
+    }
+
+    /** Lets an external scanner publish a verified candidate into the compass's reuse list. */
+    public static void rememberDeepHit(Target target, BlockPos pos) {
+        deepHits(target.id).add(new Hit(pos, false));
     }
 
     /**
@@ -1036,7 +1746,7 @@ public class ShivaxiLocator implements IStructureLocator {
         Object registeredIds = Reflect.invoke(replay.registry, "ids");
         int registrySize = registeredIds instanceof java.util.Collection
                 ? ((java.util.Collection<?>) registeredIds).size() : -1;
-        LOG.info("[SHIVAXI] rccheck: registry holds {} structure ids", registrySize);
+        LOG.info("[ULTRARARE] rccheck: registry holds {} structure ids", registrySize);
         int checked = 0;
         int hit = 0;
         int someOrder = 0;
@@ -1091,7 +1801,7 @@ public class ShivaxiLocator implements IStructureLocator {
                         // Guava's keySet() is a package-private class, so go through Collection.
                         int categories = keys instanceof java.util.Collection
                                 ? ((java.util.Collection<?>) keys).size() : -1;
-                        LOG.info("[SHIVAXI] rccheck: selector for {} holds {} entries in {} categories",
+                        LOG.info("[ULTRARARE] rccheck: selector for {} holds {} entries in {} categories",
                                 biome.getRegistryName(), entries, categories);
                         // The iteration order is what decides which draw each category is compared
                         // against; printing it makes the pinning visible on every run.
@@ -1101,10 +1811,10 @@ public class ShivaxiLocator implements IStructureLocator {
                                 order.append(replay.categoryName(key)).append(' ');
                             }
                         }
-                        LOG.info("[SHIVAXI] rccheck: iteration order = [{}] (map type {})",
+                        LOG.info("[ULTRARARE] rccheck: iteration order = [{}] (map type {})",
                                 order, weights.getClass().getName());
                     } catch (Throwable t) {
-                        LOG.warn("[SHIVAXI] could not read selector contents: {}", t.toString());
+                        LOG.warn("[ULTRARARE] could not read selector contents: {}", t.toString());
                     }
                 }
                 // The first draws the replay will make, so the probability comparison can be checked
@@ -1114,7 +1824,7 @@ public class ShivaxiLocator implements IStructureLocator {
                 for (int draw = 0; draw < 6; draw++) {
                     rolls.append(String.format(java.util.Locale.ROOT, "%.6f", peek.nextDouble())).append(' ');
                 }
-                LOG.info("[SHIVAXI] rccheck: first draws at chunk({},{}) = {}", chunkX, chunkZ, rolls);
+                LOG.info("[ULTRARARE] rccheck: first draws at chunk({},{}) = {}", chunkX, chunkZ, rolls);
             }
             // A structure is planned from one chunk but its bounding box can span neighbours, and the
             // recorded centre may sit in a different chunk than the one that planned it — a sky city
@@ -1146,7 +1856,7 @@ public class ShivaxiLocator implements IStructureLocator {
                 hit++;
                 if (offsetX != 0 || offsetZ != 0) {
                     offsets.append('(').append(offsetX).append(',').append(offsetZ).append(") ");
-                    LOG.info("[SHIVAXI] rccheck: '{}' recorded at chunk({},{}) but planned from ({},{})",
+                    LOG.info("[ULTRARARE] rccheck: '{}' recorded at chunk({},{}) but planned from ({},{})",
                             record.structureId, chunkX, chunkZ,
                             chunkX + offsetX, chunkZ + offsetZ);
                 }
@@ -1191,7 +1901,7 @@ public class ShivaxiLocator implements IStructureLocator {
                         .append(chunkZ).append("} ");
             }
         }
-        LOG.info("[SHIVAXI] rccheck: pinned order reproduced {}/{} natural records, {} more under "
+        LOG.info("[ULTRARARE] rccheck: pinned order reproduced {}/{} natural records, {} more under "
                         + "another category order ({} skipped as non-natural); offsets: [{}]; "
                         + "order indexes: [{}]; misses: {}",
                 hit, checked, someOrder, skipped, offsets, orderHits, misses);
@@ -1236,16 +1946,17 @@ public class ShivaxiLocator implements IStructureLocator {
      * at ~54 microseconds per chunk — 250k chunks took 339 s. Sampling a whole 256x256 block tile in
      * one {@code getBiomes} call amortises the GenLayer chain over 256 chunks instead.
      */
-    private static final long TICK_BUDGET_NANOS = 4_000_000L;
+    private static final long TICK_BUDGET_NANOS = 8_000_000L;
     /** Chunks per side of one batched biome tile; 16 chunks = 256 blocks. */
     private static final int TILE_CHUNKS = 16;
     private static final int TILE_BLOCKS = TILE_CHUNKS * 16;
     /** How often to say something, so a long scan does not look hung. */
-    private static final int PROGRESS_EVERY = 250_000;
-    /** Chat is noisier than the log, so it gets a line every million chunks instead. */
-    private static final int CHAT_EVERY = 1_000_000;
+    private static final int PROGRESS_EVERY = 5_000_000;
+    /** Chat is noisier than the log, so it gets a line less often than the log. */
+    private static final int CHAT_EVERY = 10_000_000;
 
     private static Replay deepReplay;
+    private static Target deepTarget;
     private static World deepWorld;
     private static net.minecraft.entity.player.EntityPlayerMP deepPlayer;
     private static int deepRadius;
@@ -1258,10 +1969,41 @@ public class ShivaxiLocator implements IStructureLocator {
     private static int deepSnowy;
     private static int deepCandidates;
     private static int deepRejected;
+    /**
+     * Diagnostics for "0 candidates": how many structures the replay planned at all, and how many
+     * of those were the target. Zero target plans means the selector never picked it (chance,
+     * biome or category); a non-zero count with zero candidates means the placer or the
+     * post-generation check refused every one.
+     */
+    private static long deepPlanned;
+    private static long deepTargetPlanned;
+    /** Diagnostic counters for "0 plans": selector calls, pairs returned, and pairs we failed to read. */
+    private static int deepPlanCalls;
+    private static int deepPairs;
+    private static int deepPairFailures;
     private static long deepStartedAt;
     private static int deepNextProgress;
     private static int deepNextChat;
-    private static final List<Hit> DEEP_HITS = new ArrayList<Hit>();
+    /**
+     * Stop once a candidate is found. The scan walks rings outward, so the first hit is in the
+     * nearest ring — waiting for the whole square only adds farther duplicates.
+     */
+    private static boolean deepStopAfterFirst = true;
+    private static boolean deepFirstHit;
+    /** Verified candidates per target id, so a scan for one structure never leaks into another. */
+    private static final Map<String, List<Hit>> DEEP_HITS =
+            new HashMap<String, List<Hit>>();
+
+    private static List<Hit> deepHits(String targetId) {
+        synchronized (DEEP_HITS) {
+            List<Hit> list = DEEP_HITS.get(targetId);
+            if (list == null) {
+                list = new ArrayList<Hit>();
+                DEEP_HITS.put(targetId, list);
+            }
+            return list;
+        }
+    }
     /** Positions RC's placer refused. Kept so a wrong dry-run can never hide a real candidate. */
     private static final List<BlockPos> DEEP_REJECTED = new ArrayList<BlockPos>();
     /** Reused biome buffer for one tile; 256x256 blocks. */
@@ -1273,18 +2015,51 @@ public class ShivaxiLocator implements IStructureLocator {
         return deepReplay != null;
     }
 
+    /** RC name of the target the generic deep scan is walking, or {@code null} when idle. */
+    public static String runningName() {
+        return deepTarget == null ? null : deepTarget.rcName;
+    }
+
+    /** The discovered hit closest to {@code player}; used for the async result packet. */
+    private static Hit nearestHit(String targetId, net.minecraft.entity.player.EntityPlayerMP player) {
+        Hit best = null;
+        double bestDistanceSq = Double.MAX_VALUE;
+        for (Hit hit : deepHits(targetId)) {
+            double distanceSq = player == null
+                    ? 0.0 : StructureResult.horizontalDistanceSq(hit.pos, player.getPosition());
+            if (best == null || distanceSq < bestDistanceSq) {
+                best = hit;
+                bestDistanceSq = distanceSq;
+            }
+        }
+        return best;
+    }
+
     /**
      * Starts (or reports) a scan that walks {@code radiusChunks} chunks outward from {@code world}.
      * Progress and results go to the player's chat as well as the log, so a five-minute scan does
      * not require watching {@code latest.log}.
      */
-    public static String startDeepScan(World world, net.minecraft.entity.player.EntityPlayerMP player,
+    public static String startDeepScan(Target target, World world,
+                                       net.minecraft.entity.player.EntityPlayerMP player,
                                        BlockPos around, int radiusChunks) {
+        return startDeepScan(target, world, player, around, radiusChunks, true);
+    }
+
+    /**
+     * @param firstOnly stop at the first candidate instead of mapping the whole square; on by
+     *                  default because the player only needs the nearest one.
+     */
+    public static String startDeepScan(Target target, World world,
+                                       net.minecraft.entity.player.EntityPlayerMP player,
+                                       BlockPos around, int radiusChunks, boolean firstOnly) {
         if (deepReplay != null) {
-            tell(player, "rlcompass.shivaxi.running", Integer.valueOf(deepScanned),
-                    Integer.valueOf(deepCandidates));
-            return "a scan is already running: " + deepScanned + " chunks, " + deepCandidates
-                    + " candidate(s). Use /rlcompass shivaxi cancel to stop it.";
+            tell(player, "rlcompass.shivaxi.running",
+                    deepTarget == null ? "?" : deepTarget.rcName,
+                    Integer.valueOf(deepScanned), Integer.valueOf(deepCandidates));
+            return "a scan is already running (" + (deepTarget == null ? "?" : deepTarget.rcName)
+                    + "): " + deepScanned + " chunks, " + deepCandidates
+                    + " candidate(s). Use /rlcompass scan cancel to stop it.";
         }
         Replay replay = Replay.create(world);
         if (replay == null) {
@@ -1292,6 +2067,7 @@ public class ShivaxiLocator implements IStructureLocator {
             return "Recurrent Complex selectors unavailable";
         }
         deepReplay = replay;
+        deepTarget = target == null ? SHIVAXI : target;
         deepWorld = world;
         deepPlayer = player;
         deepRadius = Math.max(8, Math.min(MAX_CHUNK_RADIUS, radiusChunks));
@@ -1307,33 +2083,44 @@ public class ShivaxiLocator implements IStructureLocator {
         deepSnowy = 0;
         deepCandidates = 0;
         deepRejected = 0;
+        deepPlanned = 0;
+        deepTargetPlanned = 0;
+        deepPlanCalls = 0;
+        deepPairs = 0;
+        deepPairFailures = 0;
         deepNextProgress = PROGRESS_EVERY;
         deepNextChat = CHAT_EVERY;
+        deepStopAfterFirst = firstOnly;
+        deepFirstHit = false;
         deepStartedAt = System.currentTimeMillis();
-        DEEP_HITS.clear();
+        deepHits(deepTarget.id).clear();
         DEEP_REJECTED.clear();
         SNOWY_CACHE.clear();
         long total = (2L * deepRadius + 1L) * (2L * deepRadius + 1L);
-        LOG.info("[SHIVAXI] deep scan started at chunk({},{}) radius {} chunks ({} blocks, {} chunks to walk)",
-                deepCenterX, deepCenterZ, deepRadius, (long) deepRadius * 16L, total);
+        LOG.info("[ULTRARARE] deep scan for {} started at chunk({},{}) radius {} chunks "
+                        + "({} blocks, {} chunks to walk)",
+                deepTarget.rcName, deepCenterX, deepCenterZ, deepRadius,
+                (long) deepRadius * 16L, total);
         // If the structure is not in RC's registry, no amount of scanning can ever hit it — say so
         // before the player waits five minutes for nothing.
-        if (!isRegistered(replay)) {
-            tell(player, "rlcompass.shivaxi.notRegistered");
+        if (!isRegistered(replay, deepTarget)) {
+            tell(player, "rlcompass.shivaxi.notRegistered", deepTarget.rcName);
         }
-        tell(player, "rlcompass.shivaxi.started", Integer.valueOf(deepRadius), Long.valueOf(total));
-        return "deep scan started: radius " + deepRadius + " chunks, " + total
-                + " chunks, centred on chunk(" + deepCenterX + "," + deepCenterZ + ")";
+        tell(player, "rlcompass.shivaxi.started", deepTarget.rcName,
+                Integer.valueOf(deepRadius), Long.valueOf(total));
+        return "deep scan of " + deepTarget.rcName + " started: radius " + deepRadius
+                + " chunks, " + total + " chunks, centred on chunk(" + deepCenterX + ","
+                + deepCenterZ + ")";
     }
 
-    /** Whether RC's registry actually holds the cloud city; a no-op scan is worth flagging. */
-    private static boolean isRegistered(Replay replay) {
+    /** Whether RC's registry actually holds this target; a no-op scan is worth flagging. */
+    private static boolean isRegistered(Replay replay, Target target) {
         Class<?> registryClass = Reflect.findClass(REGISTRY_CLASS);
         if (registryClass == null || replay == null) {
             return true;
         }
         Method get = Reflect.findMethod(registryClass, "get", String.class);
-        return get == null || lookupStructure(get, replay.registry, TARGET) != null;
+        return get == null || lookupStructure(get, replay.registry, target.rcName) != null;
     }
 
     /** Sends a translated line to the player running the scan, if they are still online. */
@@ -1353,10 +2140,18 @@ public class ShivaxiLocator implements IStructureLocator {
             return "no scan is running";
         }
         String summary = summarizeDeepScan("stopped");
-        tell(deepPlayer, "rlcompass.shivaxi.stopped",
+        Target target = deepTarget;
+        World world = deepWorld;
+        net.minecraft.entity.player.EntityPlayerMP player = deepPlayer;
+        tell(player, "rlcompass.shivaxi.stopped",
                 Long.valueOf(deepScanned), Long.valueOf(deepSnowy), Integer.valueOf(deepCandidates),
                 Long.valueOf((System.currentTimeMillis() - deepStartedAt) / 1000L));
+        if (target != null) {
+            PacketHandler.sendToPlayer(PacketDeepScanResult.cancelled(target.id,
+                    world == null ? 0 : world.provider.getDimension()), player);
+        }
         deepReplay = null;
+        deepTarget = null;
         deepWorld = null;
         deepPlayer = null;
         return summary;
@@ -1365,8 +2160,9 @@ public class ShivaxiLocator implements IStructureLocator {
     /** Called from the server tick; does a few milliseconds of work and returns. */
     public static void tickDeepScan() {
         Replay replay = deepReplay;
+        Target target = deepTarget;
         World world = deepWorld;
-        if (replay == null || world == null) {
+        if (replay == null || target == null || world == null) {
             return;
         }
         net.minecraft.world.biome.BiomeProvider provider = world.getBiomeProvider();
@@ -1375,6 +2171,23 @@ public class ShivaxiLocator implements IStructureLocator {
         }
         long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
         while (System.nanoTime() < deadline) {
+            if (deepFirstHit) {
+                String summary = summarizeDeepScan("first hit");
+                long seconds = (System.currentTimeMillis() - deepStartedAt) / 1000L;
+                tell(deepPlayer, "rlcompass.shivaxi.firstHit", target.rcName,
+                        Integer.valueOf(deepCandidates), Long.valueOf(seconds));
+                Hit nearest = nearestHit(target.id, deepPlayer);
+                if (nearest != null) {
+                    PacketHandler.sendToPlayer(PacketDeepScanResult.hit(target.id, nearest.pos,
+                            world.provider.getDimension()), deepPlayer);
+                }
+                deepReplay = null;
+                deepTarget = null;
+                deepWorld = null;
+                deepPlayer = null;
+                LOG.info("[ULTRARARE] {}", summary);
+                return;
+            }
             if (deepRing > deepTileRadius) {
                 String summary = summarizeDeepScan("finished");
                 long seconds = (System.currentTimeMillis() - deepStartedAt) / 1000L;
@@ -1391,15 +2204,23 @@ public class ShivaxiLocator implements IStructureLocator {
                 if (deepCandidates == 0) {
                     tell(deepPlayer, "rlcompass.shivaxi.none",
                             Long.valueOf(deepScanned), Long.valueOf(deepSnowy), Long.valueOf(seconds));
+                    PacketHandler.sendToPlayer(PacketDeepScanResult.miss(target.id,
+                            world.provider.getDimension(), deepRadius), deepPlayer);
                 } else {
                     tell(deepPlayer, "rlcompass.shivaxi.finished",
                             Long.valueOf(deepScanned), Long.valueOf(deepSnowy),
                             Integer.valueOf(deepCandidates), Long.valueOf(seconds));
+                    Hit nearest = nearestHit(target.id, deepPlayer);
+                    if (nearest != null) {
+                        PacketHandler.sendToPlayer(PacketDeepScanResult.hit(target.id, nearest.pos,
+                                world.provider.getDimension()), deepPlayer);
+                    }
                 }
                 deepReplay = null;
+                deepTarget = null;
                 deepWorld = null;
                 deepPlayer = null;
-                LOG.info("[SHIVAXI] {}", summary);
+                LOG.info("[ULTRARARE] {}", summary);
                 return;
             }
             int length = ringLength(deepRing);
@@ -1410,17 +2231,17 @@ public class ShivaxiLocator implements IStructureLocator {
                 deepRing++;
                 deepIndex = 0;
             }
-            scanTile(replay, provider, tileX, tileZ);
+            scanTile(replay, provider, tileX, tileZ, target);
         }
     }
 
     /**
-     * Samples one 16x16-chunk tile in a single {@code getBiomes} call, then replays only the snowy
-     * chunks inside it.
+     * Samples one 16x16-chunk tile in a single {@code getBiomes} call, then replays only the chunks
+     * whose biome can hold {@code target}.
      */
     private static void scanTile(Replay replay,
                                  net.minecraft.world.biome.BiomeProvider provider,
-                                 int tileX, int tileZ) {
+                                 int tileX, int tileZ, Target target) {
         Biome[] biomes = deepBiomes;
         try {
             provider.getBiomes(biomes, tileX * TILE_BLOCKS, tileZ * TILE_BLOCKS,
@@ -1439,51 +2260,79 @@ public class ShivaxiLocator implements IStructureLocator {
                 }
                 deepScanned++;
                 Biome biome = biomes[(ddz * 16) * TILE_BLOCKS + ddx * 16];
-                if (biome == null || !isSnowy(biome)) {
+                if (!target.matchesBiome(biome)) {
                     continue;
                 }
-                // Temperature also catches taiga; only a biome that actually carries the ultrarare
-                // category can ever produce Shivaxi, so count this as the real denominator.
-                if (!replay.hasUltraRare(biome)) {
+                // Only a biome that actually carries the ultrarare category can ever produce the
+                // target; count it as the real denominator.
+                if (!replay.hasCategory(biome, target.category)) {
                     continue;
                 }
                 deepSnowy++;
                 for (Replay.Planned planned : replay.planChunk(biome, chunkX, chunkZ)) {
-                    if (!TARGET.equalsIgnoreCase(bareId(planned.id))) {
+                    if (!target.matchesId(planned.id)) {
                         continue;
                     }
                     // WorldGenStructures.randomSurfacePos: the in-chunk offset comes from the seed.
                     Random positionRandom = new Random(planned.seed ^ SURFACE_SEED);
                     int x = chunkX * 16 + positionRandom.nextInt(16) + 8;
                     int z = chunkZ * 16 + positionRandom.nextInt(16) + 8;
+                    // A chunk RC already processed will never receive the structure later; the
+                    // selection below is a replay of a decision that was already made and refused.
+                    if (replay.alreadyProcessed(chunkX, chunkZ)) {
+                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) skipped: RC already "
+                                + "processed that chunk", x, z, chunkX, chunkZ);
+                        continue;
+                    }
                     // Selection said yes; ask RC's own placer whether the terrain agrees. This is the
                     // step that rejected three of the first four live candidates.
-                    if (!replay.wouldPlace(planned, x, z)) {
+                    Integer placement = replay.placementY(planned, x, z);
+                    if (placement == null) {
                         deepRejected++;
                         DEEP_REJECTED.add(new BlockPos(x, 64, z));
-                        LOG.info("[SHIVAXI] candidate at ({}, {}) chunk({},{}) rejected by RC's placer",
+                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) rejected by RC's placer",
+                                x, z, chunkX, chunkZ);
+                        continue;
+                    }
+                    // Only a real dry-run generated the chunk; Y_UNKNOWN means RC never looked, so
+                    // the absence of a record proves nothing.
+                    if (placement.intValue() != Replay.Y_UNKNOWN
+                            && !replay.hasStructureNear(target, x, z)) {
+                        // The dry-run generated the chunk, so RC has already decided: it refused this
+                        // spot (usually an overlap with a structure generated first). Reporting it
+                        // would teleport the player onto an empty field.
+                        deepRejected++;
+                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) skipped: RC generated "
+                                        + "the chunk during the dry-run and did not place it",
                                 x, z, chunkX, chunkZ);
                         continue;
                     }
                     deepCandidates++;
-                    BlockPos candidate = new BlockPos(x, 64, z);
-                    DEEP_HITS.add(new Hit(candidate, false));
+                    int candidateY = placement.intValue() == Replay.Y_UNKNOWN
+                            ? 64 : placement.intValue();
+                    BlockPos candidate = new BlockPos(x, candidateY, z);
+                    deepHits(target.id).add(new Hit(candidate, false));
                     // Record it in the warehouse so a spot that turns out to be empty can be marked
                     // instead of being offered again next time.
                     try {
                         com.tom500101.rlcompass.cache.SearchMemory.get(deepWorld)
-                                .remember(STRUCTURE_ID, candidate);
+                                .remember(target.id, candidate);
                     } catch (Throwable ignored) {
                         // warehouse is a convenience; never let it break the scan
                     }
                     // The recorded anchor of an RC structure sits up to ~3 chunks from the chunk that
-                    // planned it, so the city can be up to ~48 blocks away from this point.
-                    LOG.info("[SHIVAXI] deep scan candidate #{} at ({}, ~, {}) chunk({},{}) verified "
-                                    + "by RC's placer; {} chunks scanned",
-                            deepCandidates, x, z, chunkX, chunkZ, deepScanned);
+                    // planned it, so the structure can be up to ~48 blocks away from this point.
+                    LOG.info("[ULTRARARE] deep scan candidate #{} for {} at ({}, ~, {}) chunk({},{}) "
+                                    + "verified by RC's placer; {} chunks scanned",
+                            deepCandidates, target.rcName, x, z, chunkX, chunkZ, deepScanned);
                     tell(deepPlayer, "rlcompass.shivaxi.candidate", Integer.valueOf(deepCandidates),
                             Integer.valueOf(chunkX), Integer.valueOf(chunkZ),
                             Integer.valueOf(x), Integer.valueOf(z));
+                    if (deepStopAfterFirst) {
+                        // Ring order means this is already the nearest candidate; stop the scan.
+                        deepFirstHit = true;
+                        return;
+                    }
                 }
                 if (deepScanned >= deepNextChat) {
                     deepNextChat += CHAT_EVERY;
@@ -1494,7 +2343,7 @@ public class ShivaxiLocator implements IStructureLocator {
                 }
                 if (deepScanned >= deepNextProgress) {
                     deepNextProgress += PROGRESS_EVERY;
-                    LOG.info("[SHIVAXI] deep scan progress: {} chunks, {} snowy, {} candidate(s), "
+                    LOG.info("[ULTRARARE] deep scan progress: {} chunks, {} eligible, {} candidate(s), "
                                     + "tile ring {}/{}, {} s",
                             deepScanned, deepSnowy, deepCandidates, deepRing, deepTileRadius,
                             (System.currentTimeMillis() - deepStartedAt) / 1000L);
@@ -1510,11 +2359,14 @@ public class ShivaxiLocator implements IStructureLocator {
 
     private static String summarizeDeepScan(String state) {
         StringBuilder hits = new StringBuilder();
-        for (int i = 0; i < DEEP_HITS.size() && i < 12; i++) {
-            BlockPos pos = DEEP_HITS.get(i).pos;
+        List<Hit> found = deepTarget == null
+                ? Collections.<Hit>emptyList() : deepHits(deepTarget.id);
+        for (int i = 0; i < found.size() && i < 12; i++) {
+            BlockPos pos = found.get(i).pos;
             hits.append('(').append(pos.getX()).append(',').append(pos.getZ()).append(") ");
         }
-        return "deep scan " + state + ": " + deepScanned + " chunks, " + deepSnowy + " snowy, "
+        return "deep scan " + state + " (" + (deepTarget == null ? "?" : deepTarget.rcName) + "): "
+                + deepScanned + " chunks, " + deepSnowy + " eligible, "
                 + deepCandidates + " candidate(s), " + deepRejected + " rejected by the placer in "
                 + ((System.currentTimeMillis() - deepStartedAt) / 1000L) + " s"
                 + (hits.length() == 0 ? "" : "; " + hits);
@@ -1599,8 +2451,30 @@ public class ShivaxiLocator implements IStructureLocator {
             Collections.synchronizedSet(new java.util.HashSet<String>());
 
     /** {@code ChunkGeneratorOverworld.populate}'s random, before any decoration touches it. */
+    static long chunkSeed(long worldSeed, long k, long l, int chunkX, int chunkZ) {
+        return (long) chunkX * k + (long) chunkZ * l ^ worldSeed;
+    }
+
     private static Random chunkRandom(long worldSeed, long k, long l, int chunkX, int chunkZ) {
-        long seed = (long) chunkX * k + (long) chunkZ * l ^ worldSeed;
-        return new Random(seed);
+        return new Random(chunkSeed(worldSeed, k, l, chunkX, chunkZ));
+    }
+
+    /**
+     * Shared RNG prefilter: true when any of the first {@code draws} doubles is below
+     * {@code chance}. Inlines {@code java.util.Random}'s LCG exactly; the bit-level equivalence is
+     * documented on {@link Session#maySelect(int, int, int, double)}.
+     */
+    static boolean rngPrefilter(long seed, int draws, double chance) {
+        long state = (seed ^ Session.RNG_MULTIPLIER) & Session.RNG_MASK;
+        for (int i = 0; i < draws; i++) {
+            state = (state * Session.RNG_MULTIPLIER + Session.RNG_ADDEND) & Session.RNG_MASK;
+            long high = state >>> 22;                    // Random.next(26)
+            state = (state * Session.RNG_MULTIPLIER + Session.RNG_ADDEND) & Session.RNG_MASK;
+            long low = state >>> 21;                     // Random.next(27)
+            if (((high << 27) + low) * Session.RNG_DOUBLE_UNIT < chance) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -63,8 +63,25 @@ public final class StructureDimensions {
         register("rlcompass:dragoncave", OVERWORLD);
         register("roguelike:dungeon", OVERWORLD);
         register("doomlike:dungeon", OVERWORLD);
-        // RC's ultrarare Shivaxi is an overworld structure restricted to the $SNOWY biome tag.
+        // RC's ultrarare structures are overworld-only.
         register("rlcompass:shivaxi", OVERWORLD);
+        register("rlcompass:authorshall", OVERWORLD);
+        register("rlcompass:icecity", OVERWORLD);
+
+        // RC rare / adventure structures exposed through the hot list, all overworld natural
+        // generation (dimensionWeightsPreset=overworld in their structure.json).
+        register("rlcompass:aeriveth", OVERWORLD);
+        register("rlcompass:sanctuary", OVERWORLD);
+        register("rlcompass:erolith", OVERWORLD);
+        register("rlcompass:plainscity", OVERWORLD);
+        register("rlcompass:meridor", OVERWORLD);
+        register("rlcompass:islandcity", OVERWORLD);
+        register("rlcompass:foreststronghold", OVERWORLD);
+
+        // End structures (dimensionWeightsPreset=end, biome expression $end).
+        register("rlcompass:crystalshrine", END);
+        register("rlcompass:corruptedisland", END);
+        register("rlcompass:defiledhut", END);
 
         // Battle Towers ships overworld towers plus a netherrack tower for the nether.
         register("rlcompass:battletower", OVERWORLD, NETHER);

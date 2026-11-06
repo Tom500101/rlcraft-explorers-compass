@@ -19,6 +19,8 @@ public final class PacketHandler {
     private static final int ID_SEARCH_REQUEST = 1;
     private static final int ID_OPEN_GUI = 2;
     private static final int ID_TELEPORT_REQUEST = 3;
+    private static final int ID_DEEP_SCAN_REQUEST = 4;
+    private static final int ID_DEEP_SCAN_RESULT = 5;
 
     private static SimpleNetworkWrapper channel;
 
@@ -35,9 +37,13 @@ public final class PacketHandler {
                 ID_STRUCTURE_RESULT, Side.CLIENT);
         channel.registerMessage(PacketOpenCompassGui.Handler.class, PacketOpenCompassGui.class,
                 ID_OPEN_GUI, Side.CLIENT);
+        channel.registerMessage(PacketDeepScanResult.Handler.class, PacketDeepScanResult.class,
+                ID_DEEP_SCAN_RESULT, Side.CLIENT);
         // Client -> server
         channel.registerMessage(PacketSearchRequest.Handler.class, PacketSearchRequest.class,
                 ID_SEARCH_REQUEST, Side.SERVER);
+        channel.registerMessage(PacketDeepScanRequest.Handler.class, PacketDeepScanRequest.class,
+                ID_DEEP_SCAN_REQUEST, Side.SERVER);
         channel.registerMessage(PacketTeleportRequest.Handler.class, PacketTeleportRequest.class,
                 ID_TELEPORT_REQUEST, Side.SERVER);
     }
@@ -54,6 +60,18 @@ public final class PacketHandler {
             return;
         }
         channel().sendTo(message, player);
+    }
+
+    /** Deep-scan lifecycle updates; the scan keeps running between messages. */
+    public static void sendToPlayer(PacketDeepScanResult message, EntityPlayerMP player) {
+        if (player == null) {
+            return;
+        }
+        try {
+            channel().sendTo(message, player);
+        } catch (Throwable ignored) {
+            // the player may have disconnected mid-scan
+        }
     }
 
     public static void sendOpenGui(EntityPlayerMP player, java.util.List<String> structureIds) {

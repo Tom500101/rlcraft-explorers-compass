@@ -1276,3 +1276,887 @@ BUILD SUCCESSFUL（12–17s），已部署 `D:/MinecraftData/versions/RLCraft/mo
 ### 26.7 部署
 BUILD SUCCESSFUL（11–13s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
 备份 `build/deploy-backup/20261105-155901` / `155951`。
+
+## 27. 超稀有引擎参数化：作者大厅 / P_IceCity（2026-11-05 晚）
+
+### 27.1 结论先行
+`structures/active` 里的 `ultrarare` 只有 3 个结构，全部接入了同一套重放引擎：
+
+| 结构 | 指南针 id | RC 名 | 群系 | 备注 |
+| --- | --- | --- | --- | --- |
+| Shivaxi 天空之城 | `rlcompass:shivaxi` | `Shivaxi` | `$SNOWY` | 原有 |
+| 作者大厅 | `rlcompass:authorshall` | `RLCraft_2_9_Update_Build` | `MUTATED_FOREST` | 199×62×208，`requiredConformity=0.6609` |
+| P_IceCity | `rlcompass:icecity` | `P_IceCity` | `ICE_FLATS` | 同类别、同权重 |
+
+三者每 chunk 被选中的概率都是 `1.5e-4 × amountMultiplier ÷ 匹配结构数`：
+`amountMultiplier = min(匹配数/20, 1)` 与「按匹配结构数均分」相消，结果恒为
+`1.5e-4 / 20 = 7.5e-6`。所以「每个目标自己的群系 chunk」的成功率都是 7.5e-6，和 Shivaxi 同源。
+
+### 27.2 改法
+- `ShivaxiLocator` → **`RcUltraRareLocator`**，新增 `Target{id, rcName, biomePath, snowy}`；
+  三个常量 `SHIVAXI` / `AUTHOR_HALL` / `ICE_CITY`，`targetFor()` 同时接受完整 id、裸 id 和 RC 名。
+- Replay 完全复用；`planChunkWith` 现在为**所有**计划项读取 `Pair.getRight()`，
+  这样任何 target 的 `wouldPlace` 都有结构对象可用。
+- `hits()` 的缓存 key 加上 target id；`DEEP_HITS` 从单个 List 改成 `Map<targetId, List<Hit>>`。
+- 深扫状态加 `deepTarget`，`scanTile` 先判 `target.matchesBiome(biome)` 再判 `hasUltraRare`；
+  候选写仓库时用 `target.id`。
+- 命令：`/rlcompass scan <id|shivaxi|authorshall|icecity> [半径|cancel]`，
+  `/rlcompass shivaxi [半径]` 保留为别名；默认半径 1200。
+- GUI：`isUltraRare` 覆盖三个 id，滑条提示追加一行
+  `深扫命令：/rlcompass scan <id> 1200（约 5 分钟）`。
+
+### 27.3 验证要点
+- `/rlcompass list` 应出现 `rlcompass:authorshall`（作者大厅）与 `rlcompass:icecity`（Ice City），
+  维度均为主世界。
+- `/rlcompass rccheck 20` 的 Shivaxi 复现率不应低于参数化之前（同一引擎，回归检查）。
+- 作者大厅：`/rlcompass scan authorshall 1200`，花林占比较低，期望候选 <1；
+  没有结果改 2000–3000。候选落地后用仓库「传送」到地表再核对 199×208 的大厅。
+- 深扫日志前缀统一为 `[ULTRARARE]`，行内会带 RC 名。
+
+### 27.4 实机测量（2026-11-05 22:00）
+- 作者大厅 1200 区块：5,764,801 chunk，11,770 eligible，0 候选，302 s。
+- 作者大厅 2400 区块：23,049,601 chunk，49,700 eligible，0 候选，1,183 s。
+- P_IceCity 1200 区块：5,764,801 chunk，219,597 eligible，2 候选，310 s（两个传送后都为真）。
+- `rccheck 20`：18/20 直接复现，另 1 条在别的类别顺序下复现，1 条 miss。
+- 结论：花林约占 0.216%，按 7.5e-6/chunk 算，1200 期望 0.09、2400 期望 0.37，
+  0 候选是正常波动，不是引擎问题；冰原 219,597 × 7.5e-6 = 1.65，实测 2，吻合。
+
+### 27.5 部署
+BUILD SUCCESSFUL（14s），已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-203737`。版本号仍为 1.1.0（按用户要求攒够改动再 bump）。
+
+## 28. 作者大厅快速扫描：RNG 预筛（2026-11-05 深夜）
+
+### 28.1 为什么单独写
+通用深扫每 16×16 chunk 先采 65,536 个群系点，再重放少数目标群系 chunk。作者大厅只在花林
+（实测 0.216%），99.8% 的采样是浪费：2400 区块跑了 1,183 s。用户要求不改动 Shivaxi / P_IceCity，
+所以新增 `AuthorHallFastScan.java`，只在 `/rlcompass scan authorshall` 时启用。
+
+### 28.2 做法
+`RcUltraRareLocator` 只加了一个 additive 的 `Session` 桥：
+`openSession(world)`、`maySelect(x,z,draws,chance)`、`hasUltraRare`、`candidates(target,...)`。
+`Session` 复用私有 `Replay`，但不碰 locator 的缓存和深扫状态。
+
+`AuthorHallFastScan` 的循环：
+1. 逐 chunk 取 `chunkSeed = x*k + z*l ^ worldSeed`（与 RC populate 完全一致）；
+2. 用复用的 `Random` 读前 **64** 个 `nextDouble()`，若都 ≥ **1e-4** 则直接跳过；
+   （RC 每类别消耗 1 次，5 个类别；目标概率 7.5e-6，阈值留 13 倍余量，只会多放行、不会漏）
+3. 只有通过预筛的 chunk 才 `world.getBiome`，再判 `matchesBiome` + `hasUltraRare`；
+4. 通过者交给 `Session.candidates` 走 RC 自己的 `planChunk` + `wouldPlace`。
+预筛放行率约 0.64%，群系采样从 6,000 万级降到几十万级。
+
+### 28.3 边界
+- 预筛只保证「目标自身概率 < 阈值」时不漏；如果将来给某个目标加自定义 `spawnChances`
+  或把 `structureSpawnChance` 调到 13 倍以上，需要同步调大阈值。
+- 快扫与通用深扫互斥：两者同时只能跑一个，`/rlcompass scan cancel` 会停掉当前那个。
+- 候选仍写入 `SearchMemory` 与 `DEEP_HITS`，指南针后续搜索可直接复用。
+
+### 28.4 部署
+BUILD SUCCESSFUL，已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-230014`。版本仍 1.1.0。
+
+## 29. 把找到的作者大厅接回指南针（2026-11-05 23:39）
+
+### 29.1 为什么指南针搜不到
+实机找到的作者大厅在 `(-25299, 70583)`，距出生点约 75k 格。指南针链路有三处会把它挡住：
+1. `StructureLocatorRegistry.MAX_RADIUS = 20000`：即使配置和滑条是 100000，注册表仍裁到 20000；
+2. `findNearest` 的仓库过滤：`memory.isKnown(...)` 对任何状态都跳过，快扫候选是 `NEW`，直接丢弃；
+3. `RcUltraRareLocator.hits()` 只读 RC 记录、`DEEP_HITS` 和重放，不读 `SearchMemory`；
+   重启后 `DEEP_HITS` 清空，只剩仓库里的 TSV 记录。
+
+本次修复（三处都很小）：
+- `MAX_RADIUS` → **100000**，与 `CompassConfig.searchRadius` / `RadiusSlider` 对齐；
+- 仓库过滤对 `StructureNameUtil.isUltraRare(id)` 放行 `NEW`/`FOUND`，只有 `MISSING` 继续隐藏；
+  普通结构的「删行才能再搜」行为不变；
+- `hits()` 增加 `SearchMemory.entries()`（跳过 `MISSING`，`FOUND` 记为 recorded），
+  这样快扫结果跨重启仍可被指南针返回。
+
+### 29.2 使用方式
+选作者大厅 → 把半径滑条拉到 100000 → 搜索。指南针会先用仓库/RC 记录直接返回 75k 外的坐标，
+8 秒重放只作为补充；不再需要重新跑几十分钟的深扫。
+
+### 29.3 部署
+BUILD SUCCESSFUL，已部署 `D:/MinecraftData/versions/RLCraft/mods`，
+备份 `build/deploy-backup/20261105-233911`。版本仍 1.1.0。
+
+## 30. 热门结构快捷入口（2026-11-06 凌晨）
+
+### 30.1 交互
+主界面左栏新增「热门结构」按钮（y=65，排序/仓库/滑条依次下移 25px）。点击弹出
+160px 宽的浮层，四行：
+
+| 顺序 | id | 显示名 | 推荐半径 |
+| --- | --- | --- | --- |
+| 1 | `rlcompass:dragoncave` | Dragon Cave | 10000 |
+| 2 | `rlcompass:shivaxi` | Shivaxi (Sky City) | 100000 |
+| 3 | `rlcompass:authorshall` | 作者大厅 | 100000 |
+| 4 | `rlcompass:icecity` | Ice City | 100000 |
+
+行右侧对超稀有结构标「超稀有」。点击任意一行 = 设推荐半径（写回 cfg）+ 立即发起搜索 + 关界面。
+未安装对应模组/没有数据源的 id 不会出现在浮层里（`baseIds` 过滤）。
+
+### 30.2 实现
+- `GuiStructureSelect`：`hotButton`、`hotOpen`、`hotIds`，`drawHotMenu` / `hotIndexAt` /
+  `searchHot`；浮层左边界做宽度钳制，窄窗口不会溢出。
+- `RadiusSlider.setValue`：编程式设置，按同一 step 取整。
+- 超稀有提示多了一行深扫命令；窗口高度不足时（`height - after <= 80`）自动不画，避免压住取消按钮。
+- 左栏顺序变为：搜索 / 热门结构 / 排序 / 缓存仓库 / 半径滑条 / 提示 / 取消。
+
+### 30.3 部署
+BUILD SUCCESSFUL，已部署 `D:/MinecraftData/versions/RLCraft/mods`。版本仍 1.1.0。
+
+## 31. 稀有 / 冒险结构接入 + 深扫命中即停（2026-11-06 00:35）
+
+### 31.1 目标表（都用 /#gen 反查到 .rcst）
+
+| 名称 | RC 名 | id | 类别 | 群系 | 尺寸 |
+| --- | --- | --- | --- | --- | --- |
+| 沙漠黄金殿（艾瑞维斯） | `P_Aeriveth` | `rlcompass:aeriveth` | rare | `$HOT & $DRY & $SANDY` | 136×160×85 |
+| 绿宝石穹顶 | `P_SanctuaryOfAdmys` | `rlcompass:sanctuary` | rare | `$JUNGLE` | 55×55×72 |
+| 普通黄金殿 | `P_TempleOfErolith` | `rlcompass:erolith` | adventure | `$SANDY` | 83×94×47 |
+| 城镇（平原） | `P_PlainsCity` | `rlcompass:plainscity` | adventure | 任意 | 207×183×50 |
+| 城镇（Meridor） | `P_TownMeridor` | `rlcompass:meridor` | adventure | `$HILLS` | 172×144×51 |
+| 海港城市 | `P_IslandCity` | `rlcompass:islandcity` | adventure | `$OCEAN` | 335×307×57 |
+| 罪恶学院 | `RLCraft_ForestStronghold` | `rlcompass:foreststronghold` | adventure | `$FOREST` | 124×123×110 |
+
+识别依据是方块统计（正确解码是 **MSB-first** 的 5 bit 流；LSB 解码会读出越界索引，
+之前 12k 绿宝石就是解码错的产物）：`P_Aeriveth` 金 3203 / 绿宝石 122，
+`P_SanctuaryOfAdmys` 绿宝石 312，`P_TempleOfErolith` 金 407 / 绿宝石 19，
+`P_IslandCity` 金 4 / 铁 48 / 绿宝石 14，`P_PlainsCity` 金 21 —— 与资料逐项吻合。
+因此「绿宝石穹顶」是 `P_SanctuaryOfAdmys`，`P_TempleOfErolith` 是「普通黄金殿」。
+
+### 31.2 代码改动
+
+- `Target`：新增 `category`、`biomeExpr`；`matchesBiome` 反射 RC 的
+  `BiomeExpression.setExpression/test`，失败时退化为「只认单一路径，其余一律放行」。
+- `Replay.hasUltraRare` → `hasCategory(Biome, String)`，缓存改为按类别分组。
+- 深扫 / 指南针搜索的群系门都改用 `target.category`。
+- `Replay.chunkSeedAt`：末地走 `x*341873128712 + z*132897987541`（`ChunkGeneratorEnd`
+  在 `provideChunk` 里写死，不含世界种子），主世界仍走 `x*k + z*l ^ worldSeed`。
+- 普通结构的放置试算上限 3 次（按**尝试**计数），避免 335×307 的结构把 8 秒预算吃光。
+- 深扫命中即停：`deepStopAfterFirst`（默认 true）、`deepFirstHit`；`scanTile` 命中后直接返回，
+  下一 tick 播报 `firstHit` 并清状态。`AuthorHallFastScan` 同样处理。
+- 命令：`/rlcompass scan <id> [半径] [all]`，`all` 才扫满整个方形。
+- 热门结构扩到 10 条，浮层支持滚轮滚动 + 数量提示。
+
+### 31.3 概率修正
+
+反汇编 `SimpleCategory.structuresInBiome` 可见：类别里**每个结构各掷一次**
+`nextDouble() < 类别概率 × amountMultiplier`，`amountMultiplier = min(类别总权重/20,1)`。
+所以 ultrarare 单目标 = `1.5e-4 × 0.15 = 2.25e-5`/匹配 chunk，而不是「再除以 3」。
+rare = `6e-4 × 0.65 = 3.9e-4`（约 17 倍），adventure = `3e-3 × 1 = 3e-3`（约 133 倍）。
+
+### 31.4 部署
+
+BUILD SUCCESSFUL，已部署 `D:/MinecraftData/versions/RLCraft/mods`
+（`00:35:48`，376,645 B）。版本仍 1.1.0，未提交。
+
+## 32. 末地结构与传送落点（2026-11-06 01:20，v1.2.0）
+
+### 32.1 候选点带真实 Y
+`Replay.wouldPlace` 拆成 `placementY`：返回 `StructureBoundingBox.minY`（`null` = 放置被拒，
+`Y_UNKNOWN` = 无法判定）。深扫 / 指南针搜索 / 快扫都改存真实 Y，仓库不再显示 64。
+旧仓库里的 `y=64` 在末地视为「未知」，走岛面扫描。
+
+### 32.2 末地传送
+`SurfaceTeleport.findNear(world, x, y, z)`：
+- 维度 1 → `findOnEndIsland`：锚点 Y 可信时在 `Y-8..Y+16` 找，否则从世界顶往下扫；
+- 落点判据：脚下实心、脚和头两格空气、**3×3 至少 7 格实心**、**下方 5 格至少 4 格实心**；
+- 水平最多扩 16 格；找不到返回 null，包处理里提示 `unsafe` 并拒绝传送；
+- 其他维度仍走原 `find(world, x, z)`。
+`PacketTeleportRequest` 新增 `y` 字段（协议同步改，双端必须同版本）。
+
+### 32.3 末地三个目标
+| 名称 | RC 名 | id | 类别 | 群系 | 尺寸 |
+| --- | --- | --- | --- | --- | --- |
+| 末地解密 | `RLCraft_End_Crystal_Shrine` | `rlcompass:crystalshrine` | adventure | `$end` | 159×181×86 |
+| 末地污秽岛 | `RLCraft_End_Corrupted_Island` | `rlcompass:corruptedisland` | rare | `$end` | 90×82×74 |
+| 末地污秽小屋 | `RLCraft_End_Defiled_Island` | `rlcompass:defiledhut` | rare | `$end` | 15×13×16 |
+
+`$end` 若被 RC 的表达式解析器拒绝，`matchesBiome` 走宽松兜底（一律放行）；末地只有一个群系，
+结果仍然正确。维度拦截由 `StructureDimensions`（END）负责。
+
+### 32.4 版本
+`mod_version` / `RLCompassMod.VERSION` → **1.2.0**；README 更新日志表、CHANGELOG 同步。
+BUILD SUCCESSFUL（1m24s），部署 `01:20:00`（378,968 B）。未提交，等实机验收。
+
+## 33. 修复：预测落在已生成区块（2026-11-06 10:50，v1.2.0）
+
+### 33.1 现网现象
+`/rlcompass scan plainscity 400`、`foreststronghold 400`、`shivaxi 1200` 都命中并播报，
+但传送过去是空地；三次扫描 `0 rejected by the placer`。
+
+### 33.2 定位
+- 三个候选区块在 `saves/测试/region` 里都已有数据（`r.-49.139`、`r.-45.144`、`r.-20.173`），
+  即**扫描时区块已经生成**。
+- `reccomplex-structuredata.dat` 里候选 400 格内的记录只有别的结构（PeacefulCrypt、
+  RLCraft_DecentZombie 等），没有目标结构 —— RC 当年就把这些点拒了。
+- 根因：重放只复现「选择」，不复现「接受」。已生成区块的布局是终局，RC 不会在之后补放；
+  而放置试算只跑 placer（地形/一致性），不跑 RC 的 `structureOverlap` 检查，
+  所以 0 rejected。
+
+### 33.3 修法
+`WorldStructureGenerationData.get(world).checkedChunks` 是 RC 自己的「这个区块处理过了」集合。
+`Replay.alreadyProcessed(x,z)` 反射读取，命中则跳过：
+- 深扫 `scanTile`、
+- 指南针 `scanChunk`、
+- 快扫 `Session.candidates`。
+
+跳过的候选会打日志 `skipped: RC already processed that chunk`。
+未生成区块不受影响（集合里没有它），预测仍然有效。
+
+### 33.4 部署
+BUILD SUCCESSFUL，`10:49:36`（379,374 B）。版本仍 1.2.0。
+注意：旧仓库里的三个假候选要手动删掉，否则指南针还会返回它们。
+
+## 34. 候选改为「生成后核实」（2026-11-06 11:05，v1.2.0）
+
+### 34.1 二次定位
+新世界（`测试-1`）里 `plainscity 200` 命中 `(-6633,1925)`，传送后仍是空地。
+- 候选区块 `(-416,119)` 传送后已进入 `checkedChunks`，但存档里**没有任何 `P_PlainsCity` 记录**。
+- 候选中心 19 格处有 `DinosaurSkeleton`，完全落在 207×183 的城镇足迹内。
+- `config/reccomplex.cfg` 的 `avoidOverlappingGeneration=true`；五个目标 `blocking=true`。
+- 关键：`placementY` 读方块时已经触发区块生成 + `Chunk.populate`，RC 在那一刻就做了
+  真正的判定 —— 包括 placer 之外的 `structureOverlap`。也就是说，我们播报的是
+  「RC 刚刚拒绝过的点」。
+
+### 34.2 修法
+`Replay.hasStructureNear(target, x, z)`：反射 `WorldStructureGenerationData.getEntriesByID(rcName)`，
+只有存在一个中心落在 ±96 格内的记录才算数。深扫 / 指南针 / 快扫三处都在 `placementY`
+之后调用；`Y_UNKNOWN`（试算没真正跑）时跳过核实，避免误杀。
+被拒候选计入 `deepRejected`，日志：
+`skipped: RC generated the chunk during the dry-run and did not place it`。
+
+### 34.3 语义变化
+- 候选从「预测」变成「已核实」，传送过去必定有建筑（前提是记录匹配窗口 96 格）。
+- 代价：每次候选会生成 1 个区块（原本就会，因为试算要读方块）；被拒后继续扫，
+  所以一次扫描可能生成多个候选区块。
+- 已生成过的区块仍走 `checkedChunks` 快速跳过，不重复生成。
+
+### 34.4 部署
+BUILD SUCCESSFUL，`build/libs` `11:05:42`（380,122 B）。部署被运行中的 Minecraft 挡住，
+关闭游戏后执行 `gradlew deployToRlcraft`。
+
+## 35. 快扫泛化、末地全高兜底与「抬头看看」（2026-11-06 12:42，v1.2.0）
+
+### 35.1 实机反馈
+- 艾瑞维斯（`aeriveth`）确实找到了，但**整座建筑生成在空中**，落地后看不见，
+  容易被误判为「找到空地」——需要在文档里明确提示抬头看。
+- `authorshall` / `icecity` 在给定半径内没找到：两者都是 `ultrarare`，走通用 tile 扫描时
+  大半径耗时过长，实际很少有人扫完；要求把它们接入快扫通道。
+- `corruptedisland` 明明有 Y≈180 的天上岛，传送却提示「没有安全落点」：
+  §32.2 的锚点窗口是 `Y-8..Y+16`，而记录到的结构 Y 与真实岛面能差几十格
+  （实测结构 Y 132 / 岛面约 180），窗口内全是空气，直接返回 null。
+- 其余结构的传送均正常，末地 2→3→1 策略本身无需改动（不加缓降、不加返回）。
+
+### 35.2 代码改动
+1. `AuthorHallFastScan.java` → **`RcFastScan.java`**：`start(Target, ...)` 参数化目标，
+   字段 `target` 由 `start` 注入；`prefilterChance()` 按类别取
+   `rare = 8e-4` / 其他 `1e-4`（均高于目标自身每 chunk 概率，只多放不漏放），
+   `PREFILTER_DRAWS = 128`、`TICK_BUDGET_NANOS = 8_000_000`（8 ms/tick）。
+   `RLCompassMod` 注册的 Ticker 同步改名，`CommandRLCompass.stopAllScans()` 同时停快扫与通用深扫。
+2. `CommandRLCompass` 的 `scan` 分支按 `target.category` 路由：`ultrarare` / `rare` → `RcFastScan`，
+   `adventure` → 通用 tile 扫描（掷点率高，预筛反而更慢）。`all` 参数控制 `firstOnly`，
+   默认扫到最近一个候选就停；`/rlcompass shivaxi` 旧别名也改走 `RcFastScan`。
+3. `SurfaceTeleport.findOnEndIsland`：锚点窗口 `searchEndRings(y-8, y+16)` 失败后，
+   **回退到全高** `searchEndRings(MIN_Y, world.getActualHeight()-1)`，
+   判据不变（3×3 ≥7 实心、下方 5 格 ≥4 实心），仍找不到才拒绝，不会丢进虚空。
+4. 文档：README 结果说明 / FAQ / 超稀有章节补「建筑可能生成在空中，请抬头看看」；
+   CHANGELOG、README 的命令表、热门结构列表、快扫说明与下载版本说明同步到当前实现。
+
+### 35.3 验收命令（按顺序、一条一条执行）
+```mcfunction
+/rlcompass scan authorshall 4000      # 花林 0.22%，60% 命中率所需半径；走快扫
+/rlcompass scan icecity 1200          # 冰原 3.8%，实测应出 1~2 个候选
+/rlcompass scan aeriveth 400          # 到点后抬头看，建筑可能在高空
+/rlcompass scan corruptedisland 400   # 在末地执行；命中后在缓存仓库点「传送」
+/rlcompass scan cancel                # 需要中途停止时
+```
+验收标准：聊天栏播报 `firstHit` 后扫描自动结束；传送成功且脚下是实心岛面、
+头顶两格为空；`corruptedisland` 不再误报「无安全落点」；空中建筑按抬头提示可目视确认。
+注意：`authorshall 4000` 是 6400 万 chunk 级别，快扫也需数分钟，中途不要重复下命令。
+
+### 35.4 部署与状态
+BUILD SUCCESSFUL，`build/libs/rlcraft-explorers-compass.jar` `12:42`（380,297 B），
+SHA256 `c53dd7833d96f885dcee39256bd855b9bfa90af372e5fd268a47f90dd58c4720`；
+`D:/MinecraftData/versions/RLCraft/mods/rlcraft-explorers-compass.jar` 同哈希，
+jar 内含 `RcFastScan.class`（旧 `AuthorHallFastScan.class` 已不存在）。
+版本仍为 **1.2.0**；按用户要求**暂不提交、不推送**，等实机验收通过后再提交。
+
+## 36. 快扫预筛提速：内联 LCG + 收紧阈值（2026-11-06 13:03，v1.2.0）
+
+> ⚠️ **本章的 B 结论已被实机推翻，13:46 撤销并回退**。保留原文作为「验证方法错误」的
+> 反面教材；最终状态以 §37 为准。A（内联 LCG）保留，C 始终未做。
+
+### 36.1 决策与范围
+用户要求分档：**A（内联 LCG）现在做；B（收紧阈值）须用集合对比 + 抽样验证拿「入场券」；
+C（提高 tick 预算）留到有明确需求再说**。本节记录当时的验证证据与落地范围：
+A、B 曾落地，**C 未动**（`TICK_BUDGET_NANOS` 仍是 `8_000_000L`）。
+
+### 36.2 基线（真实日志，非估算）
+`latest.log` 12:25:25 那次 `/rlcompass scan authorshall 4000`：
+```
+64016001 chunks, 407824 prefiltered, 856 eligible, 0 candidate(s), 2 rejected, 1235 s
+```
+- 吞吐 ≈ 52,000 chunk/s；4000 半径耗时 **20.6 分钟**。
+- 8 ms/tick 占 50 ms tick 的 16%，**84% 时间在等 tick**，有效 CPU ≈ 198 s。
+- 其中 RNG 预筛 ≈ 64M × 128 draws × ~15 ns ≈ 122 s；40.8 万次 `getBiome()` ≈ 72 s；
+  真正走到重放的只有 856 次，可忽略。
+- 0 候选不是 bug：花林 0.22%，4000 半径命中率约 60%、5600 约 80%。
+
+### 36.3 A 的等价性证据（JDK 8 微基准 + 真实种子）
+内联公式（含 `setSeed` 的 `^ 0x5DEECE66D` 扰动、`next(26)` / `next(27)` 的
+`>>>22` / `>>>21`、`0x1.0p-53`）：
+```java
+long s = (seed ^ 0x5DEECE66DL) & ((1L << 48) - 1);
+s = (s * 0x5DEECE66DL + 0xBL) & MASK; long hi = s >>> 22;
+s = (s * 0x5DEECE66DL + 0xBL) & MASK; long lo = s >>> 21;
+double d = ((hi << 27) + lo) * 0x1.0p-53;
+```
+- 5 个真实世界种子（从各存档 `level.dat` 的 `RandomSeed` 读出：`4463657139655681557`、
+  `-4730594225791418030`、`-722236773594328075`、`4310834843830097659`、`1392971457497389007`）
+  各 2 万 chunk + 末地公式 2 万 chunk，共 **120,000 chunk × 128 = 15,360,000 个 double**，
+  用 `Double.doubleToRawLongBits` 逐位比对：**0 处不符**。
+- 速度：`Random.nextDouble()` 1,972 ns/chunk → 内联 230 ns/chunk，**8.5×**（3 轮预热一致）。
+- 派生参数与线上一致：`k = new Random(worldSeed).nextLong()/2*2+1`，`l` 同理；
+  主世界 `x*k + z*l ^ worldSeed`，末地 `x*341873128712 + z*132897987541`。
+
+### 36.4 B 的入场券：集合对比 + 抽样验证
+阈值 `ultrarare: 1e-4 → 3.5e-5`（目标自身 `2.25e-5`，1.56× 余量）；
+`rare: 8e-4 → 6e-4`（目标自身 `3.9e-4`，1.54× 余量）。
+样本：5 个世界种子各 40 万 chunk + 末地 40 万，共 **2,400,000 个真实 chunk 种子**。
+`S_target` = 前 128 次掷点中存在 `< 目标概率` 的 chunk（比真实命中更宽松的代理集合）。
+
+| 类别 | \|S_old\| | \|S_new\| | \|S_target\| | S_target ⊄ S_new | S_new ⊄ S_old | 最大命中 draw index |
+| --- | --- | --- | --- | --- | --- | --- |
+| ultrarare | 30,360 | 10,534 | 6,804 | **0** | 0 | 127 (< 128) |
+| rare | 233,734 | 177,407 | 116,795 | **0** | 0 | 127 (< 128) |
+
+差集抽样（每个类别取前 5 个 `S_old \ S_new`，并把窗口扩到 256 draws 复查）：
+ultrarare 五个样本的 `minDraw` 分别 `6.94e-5 / 6.81e-5 / 8.31e-5 / 9.69e-5 / 8.68e-5`，
+全部高于 `2.25e-5` 且 256 draws 内也没有更小值；rare 五个样本 `minDraw` 在
+`7.0e-4 ~ 7.9e-4`，全部高于 `3.9e-4`。即被收紧掉的 chunk 确实不含目标级掷点。
+
+**真实候选点复核**：日志 `2026-11-05-5.log` 的 `candidate #1 at chunk(-1582,4410)`，
+在 5 个世界种子下逐个复算；`worldSeed=1392971457497389007` 命中
+（`minDraw=2.45e-06 @ draw 4`），新旧阈值**都放行**，其余 4 个种子两阈值都不放行。
+
+### 36.5 需要如实记录的边界
+差集中有少量 chunk 在 **第 128~255 次**掷点里出现 `< 目标概率` 的值
+（ultrarare 70 / 19,826，rare 2,723 / 56,327）。这说明 `PREFILTER_DRAWS = 128`
+这个上界本身可能存在漏判风险，但**两个阈值都只检查前 128 次**，因此是既有边界，
+不是本次收紧引入的。若日后要提高召回，可评估把 draws 提到 256（A 之后 RNG 只剩 ~15 s CPU，
+翻倍仍可接受），但那属于改变搜索语义，需单独验证，本次未动。
+
+### 36.6 落地代码
+1. `RcUltraRareLocator.Session.maySelect`：内联 LCG，删掉共享 `prefilterRandom` 字段
+   （Java 8 `Random` 的 `AtomicLong` CAS 是主要开销），Javadoc 写明不得简化移位。
+2. `RcFastScan.prefilterChance()`：改为 `6.0E-4` / `3.5E-5`，注释记录验证依据。
+3. `RcFastScan.TICK_BUDGET_NANOS` **保持 `8_000_000L`**（C 未做）。
+4. README 超稀有段、CHANGELOG 1.2.0 `### 改进` 同步数值与实测基线。
+
+### 36.7 预期与部署
+估算：RNG CPU 122 s → 14 s，`getBiome` 40.8 万 → 约 14 万次（72 s → 25 s），
+有效 CPU 198 s → 约 45 s；占空比不变（16%）→ 真实耗时约 **5 分钟**（待实机复测）。
+BUILD SUCCESSFUL，`build/libs/rlcraft-explorers-compass.jar` `13:03`（380,447 B），
+SHA256 `f1161f07167c4ef8c823816125746ece5b53ba247c4cf1ddc9254a25be4821be`；
+`mods/` 下 jar 同哈希，旧版备份在 `build/deploy-backup/20261106-130313`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 37. 事故：收紧预筛阈值导致超稀有结构零命中（2026-11-06 13:46，v1.2.0）
+
+### 37.1 现象
+用户重启游戏（13:14 载入 13:03 的提速 jar，世界 `测试-3`）后反馈「超稀有结构一个都找不到」。
+`latest.log` + `2026-11-06-3.log.gz` 两个日志里的全部扫描：
+
+| 时间 | 命令 | prefilter | 结果 |
+| --- | --- | --- | --- |
+| 13:17 | `authorshall 5600` | 128 draws < `3.5E-5` | 125,462,401 chunks / **512 s**，560,609 prefiltered，1172 eligible，**0 candidate**，3 rejected |
+| 13:27 | `authorshall 5600`（换中心） | 同上 | 125,462,401 / **518 s**，559,991 prefiltered，1192 eligible，**0 candidate**，2 rejected |
+| 13:37 | `icecity 1200` | 同上 | 5,764,801 / 23 s，541 eligible，**0 candidate**，2 rejected |
+| 13:38 | `icecity 2400` | 同上 | 23,049,601 / 94 s，2874 eligible，**0 candidate**，3 rejected |
+| 13:42 | `icecity 1200` | 同上 | 996 eligible，**0 candidate**，0 rejected |
+| 13:43 | `icecity 2400` | 同上 | 2728 eligible，**0 candidate**，5 rejected |
+| 13:39 | `aeriveth 400` | 128 draws < `6.0E-4` | 518,701 / **18 s**，`candidate #1 at (101003,~,105677)` **verified** |
+
+对照历史（11-05 23:18，旧 jar）：`authorshall 5600` 用 `64 draws < 1.0E-4`，
+在约 4900 万 chunk 处 `candidate #1 at (-25299,~,70583)`；11-05 22:32 的
+`icecity 1200` 用通用深扫找到 2 个真城。
+
+### 37.2 排查
+- **不是「生成后核实」吞掉候选**：`latest.log` 里 `skipped` 计数为 **0**。
+  §34 的 `hasStructureNear` 失败会打 `skipped` 日志，一条都没有，说明完整重放
+  `planChunk()` 在这些 eligible chunk 里几乎没 plan 出目标（`rejected` 也只有 2~5）。
+  即**预筛放行的集合与真实命中集合几乎不重合**。
+- **不是 A 的 bug**：内联 LCG 在 1536 万个 double 上与 `Random` 位级一致；
+  且同期 `aeriveth`（rare）能命中，说明扫描链路本身正常。
+- **不是概率运气**：A+B 确实提速了（1.25 亿 chunk / 512 s ≈ 245,000 chunk/s，
+  比基线 52,000 快 4.7×），两次 5600 + 四次 icecity 全部零命中，
+  而唯一走 `6.0E-4` 阈值的 rare 目标 18 秒命中 —— 与阈值强相关。
+
+### 37.3 根因：入场券验证是同义反复
+§36.4 的「集合对比」在**同一组前 128 次掷点**上比较三个阈值。
+因为 `2.25e-5 < 3.5e-5 < 1e-4`，`S_target ⊆ S_new ⊆ S_old` 由阈值单调性**必然成立**，
+零漏判是算术恒等式，不是证据。它完全没有验证两件真正要紧的事：
+1. RC 每结构的真实掷点阈值是否等于推导出的 `2.25e-5`（`categoryChance × amountMultiplier`）。
+   实机表现说明真实阈值接近 `1e-4` 量级，于是 `draw ∈ [3.5e-5, 1e-4)` 的大量真实命中
+   被新阈值挡在门外；旧的 `1e-4` 恰好能兜住它们（以误报形式放行，再由真实重放确认）。
+2. 目标那次掷点是否落在 `PREFILTER_DRAWS = 128` 之内。类别顺序被钉死成
+   `[adventure decoration frequent rare ultrarare]`（13:17 日志），`ultrarare` 排在最后，
+   前置类别的匹配结构数会把它推到很靠后。§36.5 已经观察到 128~255 窗口有目标级掷点
+   （ultrarare 70、rare 2723），却误判为「既有风险、非 B 引入」——
+   事实是旧阈值靠宽松误报掩盖了它，收紧后风险被放大成系统性漏判。
+
+**结论：预筛本质是靠「宽松阈值产生的误报」来兜住 RC 真实掷点的位置不确定性，
+不是靠精确覆盖。收紧阈值等于撤掉这层兜底。**
+
+### 37.4 处置
+- `RcFastScan.prefilterChance()` 回退为 `8.0E-4`（rare）/ `1.0E-4`（其余），
+  并在 Javadoc 明确「不要在没有实机 A/B 的情况下再次优化」。
+- **A（内联 LCG）保留**：等价性证据独立且充分，实测吞吐 4.7× 也来自它。
+- **C（tick 预算）仍未做**，`TICK_BUDGET_NANOS = 8_000_000L`。
+- README 超稀有一段、CHANGELOG 1.2.0 的 `### 改进` / `### 修复`、§36 顶部警示同步。
+
+### 37.5 教训（写给下一次优化）
+1. 任何「保守预筛」的收紧，必须在**真实命中过的坐标**上做 A/B：
+   固定一批日志里已 verified 的 chunk，验证新旧阈值都放行，而不是在随机种子上比集合大小。
+2. 只验证「阈值单调」等于什么都没验证；要验证的是**模型与真实调用序列的对齐**。
+3. `PREFILTER_DRAWS` 与阈值是一对：一旦要收紧阈值，先证明目标掷点的 index 上界。
+
+### 37.6 复测与部署
+用户需**重启游戏**加载新 jar。建议先跑 `icecity 1200`（历史 22:32 通用深扫在此半径找到过 2 个），
+再跑 `authorshall 5600`。
+BUILD SUCCESSFUL，`build/libs/rlcraft-explorers-compass.jar` `13:51`（380,442 B），
+SHA256 `3d91ae20827bbc0ee51356c4a63a31746e02740de25bbb6fd4d796404cefa5ec`；
+`mods/` 下 jar 同哈希，收紧版备份在 `build/deploy-backup/20261106-135159`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 38. 阈值回退仍零命中：超稀有停用快扫（2026-11-06 14:04，v1.2.0）
+
+### 38.1 现象：回退生效了，但没救回召回
+用户重启加载 13:51 的回退 jar 后执行 `/rlcompass scan icecity 1200`：
+```
+[13:59:01] fast scan for P_IceCity started ... prefilter 128 draws < 1.0E-4
+[13:59:42] fast scan finished (P_IceCity): 5764801 chunks, 73222 prefiltered,
+           1458 eligible, 0 candidate(s), 1 rejected by the placer in 41 s
+```
+- `1.0E-4` 证明**阈值确实回退了**；41 s 比收紧版的 23 s 慢，正是 `prefiltered`
+  从 2.6 万涨回 7.3 万、`getBiome` 变多的预期结果。
+- 但**依旧 0 候选**，`skipped` 仍为 0，`rejected` 只有 1。
+  73,222 个放行 chunk / 1458 个 biome 匹配 chunk 里，完整重放只 plan 出 1 个 P_IceCity。
+- 结论：**§37 把根因归给阈值是错的（或不完整的）**。阈值只是放大器，
+  快扫的预筛模型本身对 `ultrarare` 就不成立。
+
+### 38.2 根因
+13:17 日志里钉死的类别顺序：
+```
+pinned RC category order: was [decoration rare ultrarare adventure frequent]
+                          now [adventure decoration frequent rare ultrarare]
+```
+`ultrarare` 排在**最后**。前置的 `adventure` / `decoration` / `frequent` / `rare`
+里匹配该群系的结构数很可能超过 `PREFILTER_DRAWS = 128`，于是目标那次掷点根本不在
+预筛检查的 128 次里。此外，预筛假设 RC 会「连续消耗 128 次 `nextDouble()`」，
+而 `planChunkWith` 里 `generatedStructures` 内部是否还消耗别的随机数从未验证过。
+
+无论哪一个成立，效果都一样：**预筛放行集合与真实命中集合近似独立**，
+等价于随机抽 1.27% 的 chunk。对命中数只有个位数的超稀有结构，成功率极低；
+`rare` 目标命中数多得多，所以 `aeriveth 400` 能在 18 秒内撞上一个。
+历史 11-05 23:18 那次 `authorshall 5600` 快扫命中属于运气，不能当作正确性证据。
+
+对照：**通用 tile 深扫（无预筛）在实机里反复找到过超稀有结构**：
+| 时间 | 目标 | 结果 |
+| --- | --- | --- |
+| 11-05 22:32 / 22:34 | `icecity 1200` | 2 个真城（约 100 万 / 289 万 chunk 处） |
+| 11-06 10:30 | `shivaxi 1200` | 1 个（3,686,239 chunks / 187 s） |
+| 11-05 23:34 | `authorshall 5600` | 1 个（快扫，运气） |
+
+### 38.3 处置
+`CommandRLCompass` 的路由改为：
+```java
+boolean fastCategory = "rare".equalsIgnoreCase(target.category);
+```
+- **`ultrarare`（shivaxi / authorshall / icecity）与 `adventure` → 通用 tile 深扫**；
+  `/rlcompass shivaxi` 旧别名同步改走 `RcUltraRareLocator.startDeepScan`。
+- **仅 `rare`（aeriveth / sanctuary / corruptedisland / defiledhut）保留 `RcFastScan`**，
+  阈值 `8e-4`，内联 LCG 提速保留。
+- `prefilterChance()` 的 `1e-4` 分支保留但不再被超稀有调用，作为历史兼容。
+
+代价要说清楚：超稀有恢复可靠但变慢，1200 半径约 5 分钟（tile 深扫实测 296 s），
+5600 半径可能超过一小时；默认「命中最近一个即停」，通常远早于扫满。
+
+### 38.4 验收
+仍需**重启游戏**加载 14:04 的 jar。第 1 条：
+```mcfunction
+/rlcompass scan icecity 1200
+```
+日志应以 `[ULTRARARE] deep scan for P_IceCity started` 开头（**不再是 `FASTHALL`**），
+命中时打印 `deep scan candidate #1 ... verified by RC's placer` 并 `first hit` 自动结束。
+若仍 0 候选，问题就与扫描器无关，需转向 RC 记录 / 群系表达式。
+
+### 38.5 部署与状态
+BUILD SUCCESSFUL，`build/libs/rlcraft-explorers-compass.jar` `14:04`（380,441 B），
+SHA256 `a00d39e0d85dbed8a1e3bf134aad09fb03036c01450ea6605dd66152a2743bd3`；
+`mods/` 下 jar 同哈希，上一版备份 `build/deploy-backup/20261106-140435`。
+README 命令表 / 超稀有段 / 多人游戏表、CHANGELOG 1.2.0 新增·改进·修复三处已同步。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 39. 恢复作者大厅独立快扫 `AuthorHallFastScan`（2026-11-06 14:31，v1.2.0）
+
+### 39.1 用户诉求
+用户指出 11-05 深夜有一版「作者大厅专门的 Java，优化过，5600 区块约 20 分钟能找到」，
+要求回退到那个版本。核对日志属实：
+```
+[23:18:30] [FASTHALL] fast scan for RLCraft_2_9_Update_Build started
+           at chunk(-1857,931) radius 5600 chunks (125462401 chunks to walk);
+           prefilter 64 draws < 1.0E-4
+[23:34:09] [FASTHALL] candidate #1 at (-25299, ~, 70583) chunk(-1582,4410) verified
+```
+即 **15 分 39 秒**命中。该版本见 §28：独立文件 `AuthorHallFastScan.java`，
+「用户要求不改动 Shivaxi / P_IceCity」，那两个仍走通用 tile 深扫。
+
+### 39.2 版本考据与恢复依据
+- `AuthorHallFastScan.java` **从未提交**（`git log --all -- "*AuthorHallFastScan*"` 为空），
+  git 里没有可 checkout 的快照；`build/deploy-backup/` 最早只到 2026-11-06 01:20。
+- 但完整源码保存在会话记录 jsonl 的 line 4276（Write，11,670 字符）及后续
+  4279 / 4287 / 4772（Edit 与 Python 补丁），足以复原行为。
+- 原始参数：`PREFILTER_DRAWS = 64`、`PREFILTER_CHANCE = 1.0E-4`、
+  `TICK_BUDGET_NANOS = 4_000_000L`、固定 `TARGET = AUTHOR_HALL`、
+  原注释假设「RC 有 5 个类别、每类别一次 `nextDouble()`，64 远超足够」。
+- 后来（§31 / §35）被泛化成 `RcFastScan`（128 draws、按类别阈值、8 ms/tick、参数化 Target），
+  并在 §36 / §37 / §38 反复调整阈值与路由。**泛化后的版本在 11-06 的多次超稀有扫描中
+  一次都没命中**，这是用户要求回退的直接原因。
+
+### 39.3 必须修正 §38 的过度结论
+§38 把「预筛模型对 ultrarare 失效」写成了定论，证据其实不充分：
+- 11-05 的 icecity 命中在 `chunk(-1471,425)` / `(-1866,927)`，属于**另一个世界**；
+- 11-06 13:59 的 `icecity 1200` 中心是 `chunk(591,192)`，覆盖范围
+  `x∈[-609,1791]`，**根本不含那两个坐标**；13:38 的 2400 中心 `chunk(6247,6252)` 同样不含；
+  13:43 的 2400 中心 `chunk(363,-20)` 虽覆盖 `(-1471,425)`，但世界种子不同，
+  同一坐标的生成结果本来就不一样。
+- 因此「找不到」至少部分是**世界 / 区域差异**，不能全归给扫描器。
+  用户凭实机记忆要求回退是合理的；本轮按其要求执行，由下一次实机来判定。
+
+### 39.4 恢复范围（重要）
+**不是整体回退到 11-05 深夜的代码状态**。那样会丢掉用户已经验收过的 1.2.0 功能：
+rare / adventure 结构、末地三结构与 2→3→1 传送、缓存仓库传送、热门结构 14 条、
+§33 / §34 的「生成后核实」修复、1.2.0 版本号等。
+本次只恢复**作者大厅那条扫描路径**，其余全部保留。若用户要的是整体回退，需另行确认。
+
+### 39.5 实现
+1. 新建 `src/main/java/com/tom500101/rlcompass/locate/impl/AuthorHallFastScan.java`：
+   独立文件、`64 draws` / `1e-4` / `4 ms`/tick、固定 `AUTHOR_HALL`、
+   5 参 `start(world, player, around, radius, firstOnly)`、`[FASTHALL]` 日志、独立 `Ticker`。
+   复用当前 `Session` API（`openSession` / `maySelect` / `hasCategory` / `candidates`），
+   因此保留 A 的内联 LCG 与 §33 / §34 的核实逻辑，但不改预筛参数。
+2. `CommandRLCompass` 三路路由：
+   `authorshall` → `AuthorHallFastScan`；`rare` → `RcFastScan`；
+   其余（`shivaxi` / `icecity` / `adventure`，含 `/rlcompass shivaxi` 别名）→ 通用 tile 深扫。
+   三条路径互相检查互斥；`stopAllScans()` 改为同时停三个。
+3. `RLCompassMod` 注册 `AuthorHallFastScan.Ticker`（与 `RcFastScan.Ticker` 并存，空闲时零开销）。
+4. README 超稀有段 / 命令表 / 多人游戏表、CHANGELOG 1.2.0 `### 修复` 同步。
+
+### 39.6 验收
+重启游戏加载 14:31 的 jar，第一条：
+```mcfunction
+/rlcompass scan authorshall 5600
+```
+日志开头应为 `[FASTHALL] fast scan for RLCraft_2_9_Update_Build started ... prefilter 64 draws < 1.0E-4`，
+命中时 `candidate #1 ... verified` + `first hit`。若在 20 分钟内命中，说明该版本行为已恢复；
+若仍 0 候选，需连同世界种子一起比对 11-05 那次的世界，而不是继续改扫描器。
+
+### 39.7 部署与状态
+BUILD SUCCESSFUL，`build/libs/rlcraft-explorers-compass.jar` `14:31`（386,439 B），
+SHA256 `d1e4f1f8f52f85c216afbf71071fc8c1ff03b30c8f7edcd1f41c65e558c4c346`；
+`mods/` 下 jar 同哈希，上一版备份 `build/deploy-backup/20261106-143114`。
+jar 内同时含 `AuthorHallFastScan.class` 与 `RcFastScan.class`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 40. 指南针直接驱动异步深扫（2026-11-06 16:08，v1.2.0）
+
+### 40.1 问题：100000 格却几秒返回「没找到」
+用户在指南针里搜「天空之城」（`rlcompass:shivaxi`），半径 100000 格，几秒后聊天栏报
+「搜索范围内没有找到」。日志实证（`2026-11-06-4.log.gz`，13:45:09→13:45:17）：
+
+```text
+[ULTRARARE] search stopped at the 8000 ms budget after 122589 chunks
+[ULTRARARE] replay scanned 122589 eligible chunks, predicted 0 candidate(s) (8011 ms)
+[ULTRARARE] 0 hit(s) for Shivaxi (0 recorded, 8017 ms)
+[REGISTRY] findNearest(rlcompass:shivaxi) from (5812, -307) -> null (8018 ms)
+Can't keep up! Running 8089ms behind, skipping 161 tick(s)
+```
+
+根因不是半径或单位：`config/rlcompass.cfg` 里就是 `searchRadius=100000`，
+`StructureLocatorRegistry` 的上限也是 100000。真正的问题在同步路径——
+`ItemExplorersCompass.search()` 调 `RcUltraRareLocator.findNearest()` → `Replay.scan()`，
+后者有硬编码 `MAX_MILLIS = 8000L`，超时直接 `return found`，0 命中被当成「半径内没有」
+发给客户端。100000 格 = 6250 区块半径，tile 半径 391，需要走完约 61 万个 tile
+（1.56 亿 chunk），8 秒连零头都不到。空结果还会被 `CACHES` 缓存 10 分钟，
+所以同位置再搜会「瞬间」返回没找到。
+
+命令 `/rlcompass scan` 才是 tick 分片版本，但 `getRequiredPermissionLevel() = 2`，
+单机不开作弊 / 生存服非 OP 玩家根本用不了——这正是用户指出的核心矛盾。
+
+### 40.2 决策
+按用户要求「以功能正确为准，直接调用深扫版本」：
+
+- 指南针界面上的 RC 稀有 / 超稀有结构不再走同步查询，改发新包启动现有三个 tick 分片扫描器；
+- 不经过 `CommandBase`，右键指南针即可用，**不要求作弊或 OP**；
+- 半径随请求发送，顺带修掉专用服务器上客户端 cfg 与服务端不一致的问题；
+- 异步执行、可取消、命中/扫完都回传客户端。
+
+### 40.3 实现
+- `PacketDeepScanRequest`（C→S，ID 4）：`cancel`、`structureId`、`radiusBlocks`。
+- `PacketDeepScanResult`（S→C，ID 5）：`STARTED / HIT / MISS / CANCELLED / BUSY / UNAVAILABLE`，
+  带坐标与维度。客户端 HIT 时 `ClientCompassState.setTarget`，MISS / CANCELLED 时 `clear`。
+- `DeepScanService`：`targetFor(id)` → 维度校验（不符时复用 `PacketStructureResult.wrongDimension`）
+  → 半径 `blocks/16` clamp 到 `8..6250` → 三分支路由（`authorshall` 独立快扫 / `rare` 参数化快扫 /
+  其余通用 tile 深扫）；已有扫描时回 `BUSY` 并附带当前目标名。
+- 三个扫描器在命中、扫满、停止时发结果包。`RcUltraRareLocator` 取距玩家最近的 `Hit`；
+  两个快扫新增 `lastHit`，在 `clear()` 前发送。
+- `ClientSearchStatus` 增加 `beginDeepScan()`（4 小时上限）与 `isDeepScan()`；
+  `GuiStructureSelect` 对深扫目标发新包，`updateButtonState()` 在扫描期间把「搜索」改为
+  「取消深扫」，点击发 `cancel`（命令取消仍保留，给管理员用）。
+- `StructureNameUtil.isDeepScanTarget` 用纯字符串集合判断，避免客户端加载
+  `RcUltraRareLocator`（引用 `EntityPlayerMP` 等服务端类）；必须与 `TARGETS` 同步维护。
+- GUI 文案 `gui.rlcompass.radiusScanHint` 不再引导玩家用命令，改为「点搜索即启动后台深扫，不需要作弊」。
+
+### 40.4 边界
+- 深扫仍是全局单例：同一时间只允许一个，第二个请求收到 `BUSY`。
+- 玩家中途退出/重连会丢失客户端指示器；服务端扫描继续，结果发不出去（已 try/catch）。
+- tick 预算未改（作者大厅 4 ms、`rare` 8 ms、通用 4 ms）；大半径下仍可能有轻微 TPS 抖动，
+  这是「异步但不影响正常游玩」的取舍，README 已写明。
+- 同步路径仍保留给非 RC 结构；`/rlcompass find` 对 RC 目标仍是 8 秒预算，属于管理员诊断入口。
+
+### 40.5 部署与验收
+BUILD SUCCESSFUL `16:08`，jar 399,514 B，
+SHA256 `48c6d7160681353f91185308ca2704440a2127ac2dfe6a0871a094001ef8d5de`，
+`mods/` 下同哈希，上一版备份 `build/deploy-backup/20261106-160845`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+验收（**必须重启游戏**）：
+1. 用**不开作弊**的存档，右键指南针 → 热门结构 → Shivaxi → 搜索；
+2. 聊天栏应出现 `rlcompass.scan.started`，HUD 显示搜索中，界面立即关闭且可继续游玩；
+3. 再次右键指南针，「搜索」按钮应显示「取消深扫」；点击后聊天栏出现取消提示；
+4. 重新搜索并等待命中：HIT 后 HUD 指向坐标，仓库新增一条；本次用时记入日志
+   `[FASTHALL] first hit` 或 `[ULTRARARE] deep scan finished`。
+
+## 41. 半径回退、通用深扫提速与龙穴限制（2026-11-06 17:21，v1.2.0）
+
+### 41.1 半径为什么「变回 10000」
+日志实证：
+
+```text
+[16:18:00] deep scan for P_PlainsCity started ... radius 625 chunks (10000 blocks)
+[16:22:31] deep scan for Shivaxi      started ... radius 6250 chunks (100000 blocks)
+```
+
+用户把滑条拖到 100000 后立刻点搜索，第一次仍按 10000 格（625 区块）跑，过一会儿再搜才是
+6250 区块。根因有两条：
+
+1. `GuiStructureSelect.searchFor()` 发的是 `CompassConfig.searchRadius`，而不是滑条当前值；
+2. `persistRadius()` 调 `ConfigManager.sync` 后，Forge 会把配置文件回读进静态字段，玩家刚选的
+   值会短暂被磁盘旧值覆盖，等下一次 reload 才恢复。
+
+修复：`searchFor()` 直接读 `radiusSlider.getValue()`（搜索请求本来就带 `radiusBlocks`，服务端
+用它算半径）；`persistRadius()` 写完盘后把选定值再写回字段一次，并在聊天栏播报
+`rlcompass.radius.saved`「半径已更新成功：N 格（M 区块）」。这样即使 config 回读延迟，
+点击搜索的那一刻也一定用玩家看到的半径。
+
+### 41.2 作者故乡为什么慢
+日志（16:27:49 起，17:14:25 时）：
+
+```text
+P_IceCity  radius 6250 chunks (100000 blocks, 156275001 chunks)
+54,500,001 chunks scanned, 1,430,723 eligible, 0 candidate(s), tile ring 231/391, 2795 s
+```
+
+已扫 46.6 分钟、231/391 环，只有 3 个候选被「生成后核实」拒绝。冰原占 2.6%，所以
+`planChunk` 被调用了 143 万次——这是全部成本所在，反射 RC 的 `generatedStructures` 每次约 2 ms。
+
+改动（不改变搜索语义）：
+
+- **保守 RNG 预筛**：`ultrarare` 目标在群系与类别通过后，再用 128 draws / `1e-3` 预筛；
+  `1e-3` 是目标概率 `2.25e-5` 的 44 倍，真实命中必然低于它，唯一假设是目标掷点在前 128 次
+  `nextDouble` 内（与快扫同一模型，作者大厅 64 draws 已实机命中过）。放行率约 12.8%，
+  `planChunk` 降到约 18 万次。
+- **`alreadyProcessed` 提前**：已由 RC 定稿的 chunk 不再先跑一遍选择器再丢弃。
+- **tick 预算 4 ms → 8 ms**：与 `RcFastScan` 一致；`AuthorHallFastScan` 仍 4 ms。
+
+预计 46 分钟 → 3~4 分钟（约 14 倍，待实机复测）。放行 chunk 仍走完整选择器、放置试算和
+生成后核实，`rare` / `adventure` 目标不受影响。
+
+### 41.3 龙穴为什么不能深扫
+`DragonRoostLocator` 用 `ModdedStructureRegionScanner` 读 `region/*.mca` 里的特征方块，再按
+「逐层直方图是否有空腔」区分地面巢与地下穴。Ice and Fire 1.7.1 没有位置记录、
+没有 `MapGenStructure`，生成随机流还与同 chunk 的其他特征共用，无法重放未生成区块。
+日志 `findNearest(rlcompass:dragoncave) -> null (396 ms)` 说明当前存档 region 里确实没有。
+因此它保持 region 扫描；搜索无结果时改发 `rlcompass.search.notFoundGenerated`，明确说
+「只能从已生成的区块里找」。热门列表其余 13 条都是 RC 目标，全部走异步深扫，不需要命令。
+
+### 41.4 部署
+BUILD SUCCESSFUL `17:21`，jar 400,324 B，
+SHA256 `e0921f533882edb936c405b2a0267b6ad1fb7abfe5f67287108f66de019a8c32`，
+`mods/` 同哈希，上一版备份 `build/deploy-backup/20261106-172111`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+验收（**重启游戏**，并先 `/rlcompass scan cancel` 停掉旧的 46 分钟扫描）：
+1. 拖半径到 100000，松手，聊天栏应出现「半径已更新成功：100000 格（6250 区块）」；
+2. 立刻点搜索，日志第一行必须是 `radius 6250 chunks (100000 blocks)`，不能再出现 625；
+3. `icecity` 深扫的总 chunk 吞吐应明显提升；`eligible` 仍是群系匹配数、不会因预筛变小
+   （预筛在 eligible 计数之后），要看 `finished` 里的 `target plans / planned`；
+4. 龙穴搜索无结果时，聊天栏应显示「只能从已生成的区块里找」而不是普通「没找到」。
+
+## 42. 龙穴半径、最大半径提示与 P_IceCity 零候选诊断（2026-11-06 18:52，v1.2.0）
+
+### 42.1 龙穴仍按 10000 格搜索
+日志 `[18:05:49] findNearest(rlcompass:dragoncave) ... (538 ms)` 没有半径字段，但龙穴走的是
+同步 `PacketSearchRequest`，服务端读 `CompassConfig.searchRadius`；17:21 的修复只覆盖了
+`PacketDeepScanRequest`，所以普通结构仍会被配置回读打回旧值。
+
+修复：`PacketSearchRequest` 增加 `radiusBlocks`，客户端传滑条值，`ItemExplorersCompass.search`
+优先用它（0 才回落到 `CompassConfig.searchRadius`）。命令 `search` 不受影响。
+
+### 42.2 最大半径的返回文案
+`PacketDeepScanResult.miss` 现在带 `radiusChunks`；客户端在 `>= 6250` 时改用
+`rlcompass.scan.missMaxRadius`：「半径内没有找到 %s。已经扫到最大半径（100000 格），
+请换一个远的地方再定位吧」。
+
+### 42.3 作者大厅 1.5 亿 chunk 为 0：正常
+`18:08:57-18:30:30` 的作者大厅快扫：
+
+```text
+156,275,001 chunks, 995,767 prefiltered, 2,140 eligible, 0 candidate, 2 rejected, 1293 s
+```
+
+花林只占 `2,140 / 1.56 亿 = 0.0014%`，不是 README 里的 0.22%（那是另一个世界的实测）。
+`2,140 × 7.5e-6 ≈ 0.016` 个期望，0 个完全正常。问题不在扫描器，而在这个世界花林极少；
+继续加半径不会改变「本地没有花林」这一事实。
+
+### 42.4 P_IceCity 0 候选：强异常，但预筛不是根因
+日志两段：
+
+```text
+16:27-17:14  54,500,001 chunks, 1,430,723 eligible, 0 candidate, 231/391, 2795 s  （无预筛）
+18:33-18:46  27,750,000 chunks,   735,997 eligible, 0 candidate, 165/391,  783 s  （有预筛）
+```
+
+按 `ultrarare` 类别 `1.5e-4 × min(3/20,1) = 2.25e-5`，再除以类别内 3 个结构，P_IceCity
+每匹配 chunk 为 **`7.5e-6`**：
+
+- 73.5 万 eligible → 期望 5.5，`P(0)=0.4%`；
+- 143 万 eligible → 期望 10.7，`P(0)=2e-5`；
+- 两段合计期望 16.2，`P(0)≈1e-7`。
+
+**预筛可以排除**：16:27 那段根本没有预筛，也是 0；`1e-3` 是目标概率的 133 倍，目标掷点必然
+低于阈值，预筛只跳过不可能命中的 chunk，不降低召回。**placer 也可以排除**：日志里 `rejected`
+只有个位数，绝大多数 chunk 是 `planChunk` 根本没产出 `P_IceCity`，不是产出后被拒绝。
+
+最可疑的是 `generationBiomes: ICE_FLATS` 在 RC 内部的实际匹配率低于 `Target.matchesBiome`
+（两者都用 `BiomeExpression`，但 `NaturalGeneration` 可能走另一条 biome 解析路径），
+或者 `P_IceCity` 在当前世界的 `ultrarare` 权重/维度条件下被跳过。
+
+### 42.5 新增诊断
+`deep scan finished/stopped` 现在输出 `target plans / planned`：
+
+- `0/N`：选择器从未选中目标 → 排查 `generationBiomes` 与 `Target.biomeExpr` 的一致性；
+- `>0/N` 但 `candidate=0`：选中后被 placer 或生成后核实拒绝 → 看 `rejected` 与
+  `skipped: RC did not place it`。
+
+下次 `icecity 1200` 对照（同一世界、同一位置）即可把范围缩到「选择」还是「放置」。
+
+### 42.6 部署
+BUILD SUCCESSFUL `18:52`，jar 400,984 B，
+SHA256 `afc59cb62f9a842552fba2c7fe7554a5c2d9ccdb285ef329bcbd369a5a0305c7`，
+`mods/` 同哈希，上一版备份 `build/deploy-backup/20261106-185221`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 43. P_IceCity / 作者大厅零候选的根因：`.rcst` 缺 `spawnChance`（2026-11-06 19:25）
+
+### 43.1 探针数据
+1200 半径对照（19:17-19:20）：
+
+```text
+selector probe at chunk(-960,704): biome=minecraft:ice_flats distance=1191.4
+  weightsSize=52
+  totals={...=7.12, ...=2.02, ...=17.94, ...=2.0, ...=13.93}
+deep scan finished (P_IceCity): 5,764,801 chunks, 205,299 eligible,
+  0 candidate(s), 0 rejected, 0/0 target plans in 153 s
+```
+
+selector 有 52 个条目、5 个类别权重都 >0；`ultrarare.rcnc` 的
+`spawnDistanceMultiplier=0.0`、`cap=1.0`，`distanceMultiplier` 恒为 1；
+`config/reccomplex.cfg` 的 `structureSpawnChance=1.0`。所以问题只剩 `spawnChance`。
+
+### 43.2 根因
+`NaturalStructureSelector.GenerationInfo.spawnChance` 是 `public double`，Java 默认 **0.0**；
+三个 `.rcst` 的 `generationInfo` 都没有这个字段。`SimpleCategory.spawnChance(biome, provider)`：
+
+- `generationBiomes` 的 `BiomeExpression.test(biome)` 为 **true** → 用 `generationInfo.spawnChance`（0）；
+- 为 **false** → 保留类别的 `defaultSpawnChances`（`1.5E-4`）。
+
+所以 `ICE_FLATS` / `MUTATED_FOREST` 匹配上反而把概率乘成 0；`$SNOWY` 因为表达式没匹配上、
+回退到 `1.5E-4`，所以 Shivaxi 一直能命中。`structuresInBiome` 里
+`nextDouble() < chance × min(totalWeight/20,1) × distanceMultiplier × modifier`，
+`chance=0` 时永远不产出，`planChunk` 返回空，`target plans=0`。
+
+### 43.3 修复
+在 `structures/active/` 的三个 `.rcst` 的 `generationInfo` 补 `"spawnChance": 1.5E-4`
+（与 `ultrarare.rcnc` 的默认值一致）：
+
+- `P_IceCity.rcst`
+- `RLCraft_2_9_Update_Build.rcst`
+- `Shivaxi.rcst`（保持行为一致）
+
+原文件备份为同名 `.bak`；`worldData.nbt` 原样保留，只重写 `structure.json`。
+这是**全局结构库**，所有世界共享；已生成的结构不变，只影响后续生成。
+
+### 43.4 验证
+启动后日志应出现：
+
+```text
+[ULTRARARE] selector probe ... spawnChances=[ultrarare=[1.5E-4], ...]
+[ULTRARARE] deep scan finished (P_IceCity): ... N/N target plans ...
+```
+
+关键是 `spawnChances` 变成 `[1.5E-4]` 且 `target plans` 不再 `0/0`；是否命中仍受概率影响
+（1200 半径期望 1.54 个，0 概率约 21%）。另需确认 RC 启动日志的结构数仍是
+`135 structures known`，若减少说明 `.rcst` 重打包被 RC 拒绝，用 `.bak` 回滚。
+
+### 43.5 部署
+BUILD SUCCESSFUL `19:25`，jar 401,867 B，
+SHA256 `74046863115c5f1c54dc26ee10e1d57eeb51c6d030553b94fd56120baa23fa21`，
+`mods/` 同哈希，上一版备份 `build/deploy-backup/20261106-192542`。
+版本仍 **1.2.0**，**未提交、未推送**。
+
+## 44. 最终结论：P_IceCity 的 spawnChance 与表面表达式（2026-11-06 23:00，v1.2.0）
+
+### 44.1 根因链
+1. `GenerationInfo.spawnChance` 默认 `0`，三个 `.rcst` 都没写；`BiomeExpression` 匹配时用 0 →
+   `structuresInBiome` 永远返回 0 → `pairs` 为空。
+2. 运行时把 `ultrarare` 类别的 `spawnChance <= 0` 补成 `1.5E-4` 后，`pairs` 有 11,432 个，
+   `P_IceCity` 被选中 6 次。
+3. 6 次全部 `boundingBox()` 为空：`SelectivePlacer.sourceMatcher = "ICE"`，RLCraft 冰原表面
+   多为雪/草。
+4. 放宽为 `!air` 后 `rejected` 归零，但 6 个候选全部
+   `skipped: RC generated the chunk during the dry-run and did not place it`。
+5. 存档核对：当前世界 `测试-7` 的 265 条 RC 记录里**没有 P_IceCity**；`测试` 存档有 2 个
+   真实记录（`(-23516,80,6814)`、`(-29839,80,14842)`）。所以 `测试-7` 的 6 个候选确实
+   RC 没放置，不是扫描器误判。
+
+### 44.2 最终代码状态
+- `ensureSpawnChances(selector)`：`ultrarare` 类别的 `spawnChance <= 0` → `1.5E-4`。
+- `relaxSourceMatcher(planned, placer)`：仅 `P_IceCity` 的 `sourceMatcher` → `!air`。
+- `RcUltraRareLocator.knownHit(...)` + `DeepScanService.start` 短路：先查 RC 记录 / 仓库，
+  有已知点直接回 `HIT`。
+- 预筛 `ULTRARARE_PREFILTER_ENABLED = true`；`PROGRESS_EVERY=5M`、`CHAT_EVERY=10M`；
+  `selector probe` 保留一次（只输出 `weightsSize` / `spawnChances`）。
+- summary 恢复为 `chunks / eligible / candidate / rejected`，不再输出未收敛的诊断计数。
+
+### 44.3 已知边界
+- `测试-7` 没有 P_IceCity 记录；功能链路已通（选择器能选中、干跑能过、记录短路可用）。
+- 想在新世界拿到 P_IceCity，需要 RC 真的生成过；换世界或换冰原区域比继续加半径有效。
+- `sourceMatcher` 放宽只影响干跑，RC 实际生成仍按 `.rcst` 的 `ICE`，所以
+  `skipped: RC did not place it` 会继续出现；这是「预测到了但 RC 没生成」的正常过滤。
+
+### 44.4 发布
+版本 **1.2.0**，提交并推送；jar 由 `build/libs` 产出（发布记录见 GitHub Release）。

@@ -1,8 +1,11 @@
 package com.tom500101.rlcompass.util;
 
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Turns the names Forge's structure generators report through {@code getStructureName()} into the
@@ -35,6 +38,18 @@ public final class StructureNameUtil {
         DISPLAY_NAME.put("rlcompass:dragoncave", "Dragon Cave");
         DISPLAY_NAME.put("rlcompass:lycanitesdungeon", "Lycanites Dungeon");
         DISPLAY_NAME.put("rlcompass:shivaxi", "Shivaxi (Sky City)");
+        DISPLAY_NAME.put("rlcompass:authorshall", "作者大厅");
+        DISPLAY_NAME.put("rlcompass:icecity", "作者故乡");
+        DISPLAY_NAME.put("rlcompass:aeriveth", "沙漠黄金殿");
+        DISPLAY_NAME.put("rlcompass:sanctuary", "绿宝石穹顶");
+        DISPLAY_NAME.put("rlcompass:erolith", "普通黄金殿");
+        DISPLAY_NAME.put("rlcompass:plainscity", "城镇（平原）");
+        DISPLAY_NAME.put("rlcompass:meridor", "城镇（Meridor）");
+        DISPLAY_NAME.put("rlcompass:islandcity", "海港城市");
+        DISPLAY_NAME.put("rlcompass:foreststronghold", "罪恶学院");
+        DISPLAY_NAME.put("rlcompass:crystalshrine", "末地解密");
+        DISPLAY_NAME.put("rlcompass:corruptedisland", "末地污秽岛");
+        DISPLAY_NAME.put("rlcompass:defiledhut", "末地污秽小屋");
     }
 
     private StructureNameUtil() {
@@ -63,12 +78,42 @@ public final class StructureNameUtil {
     /**
      * Structures whose per-chunk chance is so low that the default radius cannot contain one.
      *
-     * <p>Shivaxi's real rate is about {@code 7.5e-6} per snowy chunk, i.e. one per ~1.3 million
-     * chunks; at the default 10000-block radius there is barely a 1% chance of any being inside.
-     * The picker uses this to tell the player to raise the radius before they wait for nothing.
+     * <p>RC's three ultrarare structures share a {@code 7.5e-6}-per-chunk selection rate, i.e. one
+     * per ~133k chunks of their own biome; at the default 10000-block radius there is barely a 1%
+     * chance of any being inside. The picker uses this to warn before the player waits for nothing.
      */
     public static boolean isUltraRare(String id) {
-        return "rlcompass:shivaxi".equals(canonical(id));
+        String canonical = canonical(id);
+        return "rlcompass:shivaxi".equals(canonical)
+                || "rlcompass:authorshall".equals(canonical)
+                || "rlcompass:icecity".equals(canonical);
+    }
+
+    /**
+     * Ids the compass can search with the tick-sliced RC deep scans.
+     *
+     * <p>Kept here as plain strings because the client has to decide between an asynchronous deep
+     * scan and the synchronous locator without loading {@code RcUltraRareLocator}, which references
+     * server-only classes. Must stay in sync with {@code RcUltraRareLocator.TARGETS}.
+     */
+    private static final Set<String> DEEP_SCAN_IDS = new HashSet<String>(Arrays.asList(
+            "rlcompass:shivaxi",
+            "rlcompass:authorshall",
+            "rlcompass:icecity",
+            "rlcompass:aeriveth",
+            "rlcompass:sanctuary",
+            "rlcompass:erolith",
+            "rlcompass:plainscity",
+            "rlcompass:meridor",
+            "rlcompass:islandcity",
+            "rlcompass:foreststronghold",
+            "rlcompass:crystalshrine",
+            "rlcompass:corruptedisland",
+            "rlcompass:defiledhut"));
+
+    /** Whether this id is served by the asynchronous RC deep scans rather than the locator chain. */
+    public static boolean isDeepScanTarget(String id) {
+        return DEEP_SCAN_IDS.contains(canonical(id));
     }
 
     /** Maps a {@code getStructureName()} value to a namespaced id. */

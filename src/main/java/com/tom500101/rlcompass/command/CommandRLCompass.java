@@ -19,6 +19,9 @@ import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.item.ItemExplorersCompass;
 import com.tom500101.rlcompass.locate.StructureLocatorRegistry;
 import com.tom500101.rlcompass.locate.StructureResult;
+import com.tom500101.rlcompass.locate.impl.AuthorHallFastScan;
+import com.tom500101.rlcompass.locate.impl.RcFastScan;
+import com.tom500101.rlcompass.locate.impl.RcUltraRareLocator;
 import com.tom500101.rlcompass.util.StructureDimensions;
 import com.tom500101.rlcompass.util.StructureNameUtil;
 import com.tom500101.rlcompass.util.StructureProbe;
@@ -33,7 +36,7 @@ public class CommandRLCompass extends CommandBase {
 
     private static final List<String> SUBCOMMANDS =
             Arrays.asList("probe", "list", "find", "search", "rebuildcache", "cache", "rccheck",
-                    "shivaxi");
+                    "shivaxi", "scan");
 
     @Override
     public String getName() {
@@ -42,7 +45,7 @@ public class CommandRLCompass extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/rlcompass <probe|list|find <structureId>>";
+        return "/rlcompass <list|find <id>|scan <id> [radius|cancel]>";
     }
 
     @Override
@@ -167,21 +170,74 @@ public class CommandRLCompass extends CommandBase {
                 // Long-running replacement for the 200-block search: walks outward chunk by chunk
                 // and replays RC on every snowy one. Tick-sliced, so the game keeps running.
                 if (args.length >= 2 && "cancel".equalsIgnoreCase(args[1])) {
-                    reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.stopDeepScan());
+                    reply(sender, stopAllScans());
                     return;
                 }
-                int radiusChunks = 1200;
-                if (args.length >= 2) {
-                    try {
-                        radiusChunks = Math.max(8, Math.min(com.tom500101.rlcompass.locate.impl.ShivaxiLocator.MAX_CHUNK_RADIUS,
-                                Integer.parseInt(args[1])));
-                    } catch (NumberFormatException ignored) {
-                        // keep the default
-                    }
+                if (RcUltraRareLocator.deepScanActive() || RcFastScan.active()
+                        || AuthorHallFastScan.active()) {
+                    throw new CommandException(
+                            "another scan is running; /rlcompass scan cancel it first");
                 }
                 EntityPlayerMP player = getCommandSenderAsPlayer(sender);
-                reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.startDeepScan(
+                int radiusChunks = parseScanRadius(args.length >= 2 ? args[1] : null);
+                // Same tile scan as `scan shivaxi`: the RNG prefilter cannot see ultrarare rolls.
+                reply(sender, RcUltraRareLocator.startDeepScan(RcUltraRareLocator.SHIVAXI,
                         world, player, player.getPosition(), radiusChunks));
+                return;
+            }
+
+            case "scan": {
+                // Generic form: /rlcompass scan <id> [radius|cancel]. The id may be the compass id
+                // (rlcompass:authorshall) or RC's registry name (RLCraft_2_9_Update_Build).
+                if (args.length >= 2 && "cancel".equalsIgnoreCase(args[1])) {
+                    reply(sender, stopAllScans());
+                    return;
+                }
+                if (args.length < 2) {
+                    throw new CommandException("usage: /rlcompass scan <id> [radius] [all|cancel]"
+                            + " — ids: shivaxi, authorshall, icecity, aeriveth, sanctuary,"
+                            + " erolith, plainscity, meridor, islandcity, foreststronghold, crystalshrine, corruptedisland, defiledhut");
+                }
+                RcUltraRareLocator.Target target = RcUltraRareLocator.targetFor(args[1]);
+                if (target == null) {
+                    throw new CommandException("unknown structure: " + args[1]
+                            + " (try shivaxi, authorshall, icecity, aeriveth, sanctuary,"
+                            + " erolith, plainscity, meridor, islandcity, foreststronghold, crystalshrine, corruptedisland or defiledhut)");
+                }
+                // Default stops at the first (nearest) candidate; a trailing "all" maps the whole
+                // square like before, which is only useful for statistics.
+                boolean firstOnly = args.length < 4 || !"all".equalsIgnoreCase(args[3]);
+                EntityPlayerMP player = getCommandSenderAsPlayer(sender);
+                int radiusChunks = parseScanRadius(args.length >= 3 ? args[2] : null);
+                // Three scanners, restored to the 2026-11-05 layout on user request:
+                //   authorshall -> AuthorHallFastScan (dedicated file, 64 draws @ 1e-4, 4 ms/tick)
+                //   rare        -> RcFastScan (parameterised RNG prefilter)
+                //   everything else (shivaxi / icecity / adventure) -> generic tile deep scan
+                // See HANDOFF §38 / §39.
+                boolean authorHall = "rlcompass:authorshall".equalsIgnoreCase(target.id);
+                boolean fastCategory = "rare".equalsIgnoreCase(target.category);
+                if (authorHall) {
+                    if (RcFastScan.active() || RcUltraRareLocator.deepScanActive()) {
+                        throw new CommandException(
+                                "another scan is running; /rlcompass scan cancel it first");
+                    }
+                    reply(sender, AuthorHallFastScan.start(world, player,
+                            player.getPosition(), radiusChunks, firstOnly));
+                } else if (fastCategory) {
+                    if (AuthorHallFastScan.active() || RcUltraRareLocator.deepScanActive()) {
+                        throw new CommandException(
+                                "another scan is running; /rlcompass scan cancel it first");
+                    }
+                    reply(sender, RcFastScan.start(target, world, player, player.getPosition(),
+                            radiusChunks, firstOnly));
+                } else {
+                    if (AuthorHallFastScan.active() || RcFastScan.active()) {
+                        throw new CommandException(
+                                "a fast scan is running; /rlcompass scan cancel it first");
+                    }
+                    reply(sender, RcUltraRareLocator.startDeepScan(target, world, player,
+                            player.getPosition(), radiusChunks, firstOnly));
+                }
                 return;
             }
 
@@ -199,7 +255,7 @@ public class CommandRLCompass extends CommandBase {
                         // keep the default
                     }
                 }
-                reply(sender, com.tom500101.rlcompass.locate.impl.ShivaxiLocator.diagnose(world, newest));
+                reply(sender, RcUltraRareLocator.diagnose(world, newest));
                 return;
             }
 
@@ -243,6 +299,37 @@ public class CommandRLCompass extends CommandBase {
             default:
                 throw new CommandException("unknown subcommand: " + args[0] + " (usage: " + getUsage(sender) + ")");
         }
+    }
+
+    /** Stops whichever scanner is running; each reports "no scan" when idle. */
+    private static String stopAllScans() {
+        String[] results = {AuthorHallFastScan.stop(), RcFastScan.stop(),
+                RcUltraRareLocator.stopDeepScan()};
+        StringBuilder text = new StringBuilder();
+        for (String result : results) {
+            if ("no scan is running".equals(result)) {
+                continue;
+            }
+            if (text.length() > 0) {
+                text.append(" | ");
+            }
+            text.append(result);
+        }
+        return text.length() == 0 ? "no scan is running" : text.toString();
+    }
+
+    /** Clamps the optional radius argument; a missing or malformed value keeps the 1200 default. */
+    private static int parseScanRadius(String raw) {
+        int radius = 1200;
+        if (raw == null) {
+            return radius;
+        }
+        try {
+            radius = Integer.parseInt(raw);
+        } catch (NumberFormatException ignored) {
+            return radius;
+        }
+        return Math.max(8, Math.min(RcUltraRareLocator.MAX_CHUNK_RADIUS, radius));
     }
 
     private static void reply(ICommandSender sender, String message) {
