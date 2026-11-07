@@ -449,19 +449,26 @@ public class GuiStructureSelect extends GuiScreen {
     }
 
     /**
-     * One-click quick search. Ultra-rare structures get the 100000-block radius they need, unless
-     * the player already set something larger.
+     * One-click quick search.
+     *
+     * <p>Only the three ultra-rares force a radius: they need 100000 blocks to have a realistic
+     * chance, so clicking one with 10000 set would otherwise wait for nothing. Every other entry
+     * keeps whatever the player chose — the old code rewrote the radius back to 10000 for them and
+     * persisted that to disk, which silently turned a 100000-block setting into a 10000-block one.
      */
     private void searchHot(String structureId) {
         if (structureId == null) {
             return;
         }
-        int recommended = StructureNameUtil.isUltraRare(structureId) ? 100000 : 10000;
-        if (CompassConfig.searchRadius != recommended) {
-            CompassConfig.searchRadius = recommended;
-            if (radiusSlider != null) {
-                radiusSlider.setValue(recommended);
-                persistRadius();
+        if (StructureNameUtil.isUltraRare(structureId)) {
+            int current = radiusSlider != null
+                    ? radiusSlider.getValue() : CompassConfig.searchRadius;
+            if (current < 100000) {
+                CompassConfig.searchRadius = 100000;
+                if (radiusSlider != null) {
+                    radiusSlider.setValue(100000);
+                    persistRadius();
+                }
             }
         }
         searchFor(structureId, null);

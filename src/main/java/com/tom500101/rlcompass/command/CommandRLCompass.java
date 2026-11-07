@@ -45,7 +45,7 @@ public class CommandRLCompass extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/rlcompass <list|find <id>|scan <id> [radius|cancel]>";
+        return "/rlcompass <list|biome|find <id>|scan <id> [radius|cancel]|turbo [on|off]>";
     }
 
     @Override
@@ -180,6 +180,14 @@ public class CommandRLCompass extends CommandBase {
                 }
                 EntityPlayerMP player = getCommandSenderAsPlayer(sender);
                 int radiusChunks = parseScanRadius(args.length >= 2 ? args[1] : null);
+                // A structure RC already recorded is authoritative. Re-scanning it would skip the
+                // chunk as "already generated" and report nothing, which reads as "not found".
+                BlockPos recordedShivaxi = RcUltraRareLocator.knownHit(RcUltraRareLocator.SHIVAXI,
+                        world, player.getPosition(), radiusChunks * 16);
+                if (recordedShivaxi != null) {
+                    reply(sender, recordedHint(RcUltraRareLocator.SHIVAXI, recordedShivaxi));
+                    return;
+                }
                 // Same tile scan as `scan shivaxi`: the RNG prefilter cannot see ultrarare rolls.
                 reply(sender, RcUltraRareLocator.startDeepScan(RcUltraRareLocator.SHIVAXI,
                         world, player, player.getPosition(), radiusChunks));
@@ -209,6 +217,17 @@ public class CommandRLCompass extends CommandBase {
                 boolean firstOnly = args.length < 4 || !"all".equalsIgnoreCase(args[3]);
                 EntityPlayerMP player = getCommandSenderAsPlayer(sender);
                 int radiusChunks = parseScanRadius(args.length >= 3 ? args[2] : null);
+                // Same short-circuit the GUI path has had since §44: a recorded structure is a fact,
+                // and re-scanning it would silently skip the finished chunk. `all` still forces a
+                // full pass, which is what the statistics runs want.
+                if (firstOnly) {
+                    BlockPos recorded = RcUltraRareLocator.knownHit(target, world,
+                            player.getPosition(), radiusChunks * 16);
+                    if (recorded != null) {
+                        reply(sender, recordedHint(target, recorded));
+                        return;
+                    }
+                }
                 // Three scanners, restored to the 2026-11-05 layout on user request:
                 //   authorshall -> AuthorHallFastScan (dedicated file, 64 draws @ 1e-4, 4 ms/tick)
                 //   rare        -> RcFastScan (parameterised RNG prefilter)
@@ -237,6 +256,59 @@ public class CommandRLCompass extends CommandBase {
                     }
                     reply(sender, RcUltraRareLocator.startDeepScan(target, world, player,
                             player.getPosition(), radiusChunks, firstOnly));
+                }
+                return;
+            }
+
+            case "turbo": {
+                // Experimental switch for the three ultra-rare targets only. It widens the
+                // per-tick slice of AuthorHallFastScan / the generic tile scan from 4-8 ms to
+                // 40 ms, which is what actually decides their wall-clock time: at 8 ms the scan
+                // sits idle for 84% of every tick. `rare` (RcFastScan) is deliberately untouched.
+                if (args.length < 2) {
+                    reply(sender, "turbo is " + (CompassConfig.turboScan ? "ON" : "OFF")
+                            + " (40 ms/tick for authorshall / icecity / shivaxi);"
+                            + " use /rlcompass turbo on|off");
+                    return;
+                }
+                String mode = args[1].toLowerCase(java.util.Locale.ROOT);
+                boolean enable;
+                if ("on".equals(mode) || "true".equals(mode) || "1".equals(mode)) {
+                    enable = true;
+                } else if ("off".equals(mode) || "false".equals(mode) || "0".equals(mode)) {
+                    enable = false;
+                } else {
+                    throw new CommandException("usage: /rlcompass turbo [on|off]");
+                }
+                CompassConfig.turboScan = enable;
+                try {
+                    net.minecraftforge.common.config.ConfigManager.sync(
+                            com.tom500101.rlcompass.RLCompassMod.MODID,
+                            net.minecraftforge.common.config.Config.Type.INSTANCE);
+                } catch (Throwable ignored) {
+                    // an unwritable config must not break the command; the value still applies
+                }
+                // sync() re-reads the file and can put the old value back; write it again so the
+                // toggle takes effect on the very next tick instead of the next launch.
+                CompassConfig.turboScan = enable;
+                boolean running = AuthorHallFastScan.active() || RcFastScan.active()
+                        || RcUltraRareLocator.deepScanActive();
+                reply(sender, enable
+                        ? "turbo ON: ultra-rare scans may now use 40 ms of every tick"
+                          + " (expect TPS 14-16 while one runs); only authorshall / icecity /"
+                          + " shivaxi are affected"
+                        : "turbo OFF: ultra-rare scans are back to their normal 4-8 ms per tick");
+                if (running) {
+                    reply(sender, "the running scan switches from the next tick, no restart needed");
+                }
+                return;
+            }
+
+            case "biome": {
+                // The one question a scan cannot answer: am I standing in the right place?
+                // eligible = 0 means the biome never matched, and no radius will fix that.
+                for (String line : RcUltraRareLocator.biomeReport(world, origin)) {
+                    reply(sender, line);
                 }
                 return;
             }
@@ -299,6 +371,12 @@ public class CommandRLCompass extends CommandBase {
             default:
                 throw new CommandException("unknown subcommand: " + args[0] + " (usage: " + getUsage(sender) + ")");
         }
+    }
+
+    /** One-line answer for "this structure is already in the save" instead of running a scan. */
+    private static String recordedHint(RcUltraRareLocator.Target target, BlockPos pos) {
+        return "already recorded: " + target.rcName + " at (" + pos.getX() + ", "
+                + pos.getY() + ", " + pos.getZ() + ") — append `all` to force a full re-scan";
     }
 
     /** Stops whichever scanner is running; each reports "no scan" when idle. */

@@ -14,6 +14,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.cache.SearchMemory;
+import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.network.PacketDeepScanResult;
 import com.tom500101.rlcompass.network.PacketHandler;
 
@@ -72,8 +73,15 @@ public final class RcFastScan {
 
     /** Twice the generic scanner slice: this loop is a cheap RNG filter, not biome work. */
     private static final long TICK_BUDGET_NANOS = 8_000_000L;
+    /** Experimental budget used when {@code CompassConfig.turboScan} is on; see HANDOFF §45. */
+    private static final long TURBO_TICK_BUDGET_NANOS = 40_000_000L;
     private static final int PROGRESS_EVERY = 1_000_000;
     private static final int CHAT_EVERY = 5_000_000;
+
+    /** Current per-tick slice; read every tick so the switch applies without restarting a scan. */
+    private static long tickBudgetNanos() {
+        return CompassConfig.turboScan ? TURBO_TICK_BUDGET_NANOS : TICK_BUDGET_NANOS;
+    }
 
     private static RcUltraRareLocator.Session session;
     private static World world;
@@ -213,7 +221,7 @@ public final class RcFastScan {
         if (active == null || scanWorld == null) {
             return;
         }
-        long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
+        long deadline = System.nanoTime() + tickBudgetNanos();
         while (System.nanoTime() < deadline) {
             if (ring > radius) {
                 finish();
@@ -297,7 +305,8 @@ public final class RcFastScan {
         return "fast scan " + state + " (" + target.rcName + "): " + scanned + " chunks, "
                 + prefiltered + " prefiltered, " + eligible + " eligible, " + candidates
                 + " candidate(s), " + rejected + " rejected by the placer in "
-                + ((System.currentTimeMillis() - startedAt) / 1000L) + " s";
+                + ((System.currentTimeMillis() - startedAt) / 1000L) + " s"
+                + (CompassConfig.turboScan ? " [turbo 40 ms/tick]" : "");
     }
 
     private static void tell(EntityPlayerMP target, String key, Object... args) {

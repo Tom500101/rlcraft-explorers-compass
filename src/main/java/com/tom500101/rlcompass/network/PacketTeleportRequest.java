@@ -12,6 +12,7 @@ import net.minecraftforge.fml.common.network.simpleimpl.IMessageHandler;
 import net.minecraftforge.fml.common.network.simpleimpl.MessageContext;
 import net.minecraftforge.fml.relauncher.Side;
 
+import com.tom500101.rlcompass.util.IceCityTeleport;
 import com.tom500101.rlcompass.util.SurfaceTeleport;
 
 /**
@@ -112,8 +113,17 @@ public class PacketTeleportRequest implements IMessage {
                 player.sendMessage(new TextComponentTranslation("rlcompass.teleport.wrongDimension"));
                 return;
             }
-            BlockPos spot = SurfaceTeleport.findNear(player.getEntityWorld(), message.getX(),
-                    message.getY(), message.getZ());
+            // 作者故乡 is sunken: it needs the structure-anchored search, everything else keeps the
+            // generic surface rule. The exception lives in its own class so no other structure can
+            // inherit it.
+            net.minecraft.world.World world = player.getEntityWorld();
+            BlockPos spot = IceCityTeleport.matches(message.getStructureId())
+                    ? IceCityTeleport.find(world, message.getX(), message.getY(), message.getZ())
+                    : null;
+            if (spot == null) {
+                spot = SurfaceTeleport.findNear(world, message.getX(), message.getY(),
+                        message.getZ());
+            }
             if (spot == null) {
                 player.sendMessage(new TextComponentTranslation("rlcompass.teleport.unsafe"));
                 return;

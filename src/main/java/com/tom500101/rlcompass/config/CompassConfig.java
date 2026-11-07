@@ -52,6 +52,17 @@ public final class CompassConfig {
     })
     public static boolean debugRandomProbe = false;
 
+    @Config.Comment({
+            "Experimental: raise the deep-scan tick budget from 4-8 ms to 40 ms.",
+            "Applies to every Recurrent Complex target (ultra-rare, rare, adventure, villages,",
+            "the End structures). Dragon roosts and battle towers are synchronous region scans",
+            "and are not affected. Scans finish roughly 5-40x sooner, at the cost of a visibly",
+            "lower TPS while one runs: the server spends ~80% of every tick inside the scan.",
+            "Toggle in game with /rlcompass turbo [on|off]; the value is saved here, so it",
+            "survives a jar update."
+    })
+    public static boolean turboScan = false;
+
     private CompassConfig() {
     }
 

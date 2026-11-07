@@ -14,6 +14,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.cache.SearchMemory;
+import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.network.PacketDeepScanResult;
 import com.tom500101.rlcompass.network.PacketHandler;
 
@@ -42,6 +43,18 @@ public final class AuthorHallFastScan {
     private static final double PREFILTER_CHANCE = 1.0E-4;
 
     private static final long TICK_BUDGET_NANOS = 4_000_000L;
+    /**
+     * Experimental budget used when {@code CompassConfig.turboScan} is on. 40 ms of a 50 ms tick
+     * leaves little room for anything else, so TPS drops to roughly 14-16 while scanning; in
+     * exchange the 5600-chunk Author's Hall run drops from ~21 minutes to ~2.
+     */
+    private static final long TURBO_TICK_BUDGET_NANOS = 40_000_000L;
+    /**
+     * Chunks between deadline checks. Reading {@code System.nanoTime()} per chunk cost ~4 s over a
+     * 156M-chunk run; a slice of 128 chunks stays well under budget unless nearly all of them
+     * survive the prefilter, which happens for 0.64% of chunks.
+     */
+    private static final int BUDGET_CHECK_EVERY = 128;
     private static final int PROGRESS_EVERY = 1_000_000;
     private static final int CHAT_EVERY = 5_000_000;
 
@@ -67,6 +80,23 @@ public final class AuthorHallFastScan {
     private static boolean stopAfterFirst = true;
 
     private AuthorHallFastScan() {
+    }
+
+    /**
+     * Current per-tick slice: 40 ms in experimental turbo mode, 4 ms otherwise.
+     *
+     * <p>Read every tick rather than captured at start, so toggling the switch applies to a running
+     * scan on the next tick.
+     */
+    private static long tickBudgetNanos() {
+        return CompassConfig.turboScan ? TURBO_TICK_BUDGET_NANOS : TICK_BUDGET_NANOS;
+    }
+
+    /** Suffix for scan log lines, so a turbo run is never confused with a normal one. */
+    private static String tickBudgetTag() {
+        long budget = tickBudgetNanos();
+        return CompassConfig.turboScan
+                ? " [turbo " + (budget / 1_000_000L) + " ms/tick]" : "";
     }
 
     public static boolean active() {
@@ -111,8 +141,9 @@ public final class AuthorHallFastScan {
         startedAt = System.currentTimeMillis();
         long total = (2L * radius + 1L) * (2L * radius + 1L);
         LOG.info("[FASTHALL] fast scan for {} started at chunk({},{}) radius {} chunks "
-                        + "({} chunks to walk); prefilter {} draws < {}",
-                TARGET.rcName, centerX, centerZ, radius, total, PREFILTER_DRAWS, PREFILTER_CHANCE);
+                        + "({} chunks to walk); prefilter {} draws < {}{}",
+                TARGET.rcName, centerX, centerZ, radius, total, PREFILTER_DRAWS, PREFILTER_CHANCE,
+                tickBudgetTag());
         if (!session.isRegistered(TARGET)) {
             tell(player, "rlcompass.shivaxi.notRegistered", TARGET.rcName);
         }
@@ -174,8 +205,16 @@ public final class AuthorHallFastScan {
         if (active == null || scanWorld == null) {
             return;
         }
-        long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
-        while (System.nanoTime() < deadline) {
+        long deadline = System.nanoTime() + tickBudgetNanos();
+        int untilCheck = 0;
+        while (true) {
+            if (untilCheck <= 0) {
+                untilCheck = BUDGET_CHECK_EVERY;
+                if (System.nanoTime() >= deadline) {
+                    return;
+                }
+            }
+            untilCheck--;
             if (ring > radius) {
                 finish();
                 return;
@@ -258,7 +297,7 @@ public final class AuthorHallFastScan {
         return "fast scan " + state + " (" + TARGET.rcName + "): " + scanned + " chunks, "
                 + prefiltered + " prefiltered, " + eligible + " eligible, " + candidates
                 + " candidate(s), " + rejected + " rejected by the placer in "
-                + ((System.currentTimeMillis() - startedAt) / 1000L) + " s";
+                + ((System.currentTimeMillis() - startedAt) / 1000L) + " s" + tickBudgetTag();
     }
 
     private static void tell(EntityPlayerMP recipient, String key, Object... args) {

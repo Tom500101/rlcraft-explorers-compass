@@ -55,10 +55,12 @@ rlcompass.shivaxi.progress=Deep scan: %s / %s chunks, %s eligible, %s candidate(
 rlcompass.shivaxi.candidate=* Candidate #%s: chunk (%s, %s), around (%s, %s) — within 48 blocks; added to the warehouse
 rlcompass.shivaxi.finished=Deep scan finished: %s chunks, %s eligible, %s candidate(s), %s s
 rlcompass.shivaxi.none=Deep scan finished: %s chunks, %s eligible, no candidates, %s s (try a larger radius)
+rlcompass.shivaxi.alreadyGenerated=Note: %s chunk(s) were already generated and skipped; the structure may already exist in this save - check the warehouse
+rlcompass.shivaxi.overlap=%s spot(s) were taken by another structure, so RC will not build there; try another region instead of a larger radius
 rlcompass.shivaxi.stopped=Deep scan stopped: %s chunks, %s eligible, %s candidate(s), %s s
 rlcompass.shivaxi.notRegistered=Note: %s is not in RC's registry — this scan cannot hit it
 rlcompass.shivaxi.unavailable=Recurrent Complex is unavailable; cannot scan
-rlcompass.shivaxi.rejected=Dropped %s position(s) that failed RC's placement check: %s
+rlcompass.shivaxi.rejected=Dropped %s position(s) that failed RC's placement check or are not confirmed yet: %s
 
 # search radius slider
 gui.rlcompass.radiusValue=Radius %s

@@ -104,6 +104,10 @@ public class RLCompassMod {
                 new com.tom500101.rlcompass.locate.impl.AuthorHallFastScan.Ticker());
         MinecraftForge.EVENT_BUS.register(
                 new com.tom500101.rlcompass.locate.impl.RcFastScan.Ticker());
+        // Say it once at startup so nobody has to guess whether the switch survived a jar update.
+        LOG.info("[CONFIG] turboScan={} ({}), searchRadius={}", CompassConfig.turboScan ? "ON" : "OFF",
+                CompassConfig.turboScan ? "40 ms/tick for RC scans" : "normal 4-8 ms/tick",
+                CompassConfig.searchRadius);
         // Client classes do not exist on a dedicated server, so the HUD renderer is only touched here.
         if (event.getSide().isClient()) {
             ClientSetup.register();

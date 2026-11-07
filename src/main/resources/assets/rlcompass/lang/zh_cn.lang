@@ -55,10 +55,12 @@ rlcompass.shivaxi.progress=深度扫描：%s / %s 区块，可生成 %s，候选
 rlcompass.shivaxi.candidate=★ 候选 #%s：区块 (%s, %s)，约 (%s, %s) —— 48 格范围内找；已记入缓存仓库
 rlcompass.shivaxi.finished=深度扫描完成：%s 区块，可生成 %s，候选 %s，用时 %s 秒
 rlcompass.shivaxi.none=深度扫描完成：%s 区块，可生成 %s，没有候选，用时 %s 秒（可加大半径再试）
+rlcompass.shivaxi.alreadyGenerated=注意：%s 个区块已经生成过，结构早已定稿，扫描会跳过；如果它确实存在，请到缓存仓库查看记录
+rlcompass.shivaxi.overlap=其中 %s 个位置被别的结构占了地盘，RC 不会在那里放置；换个区域比加大半径有用
 rlcompass.shivaxi.stopped=深度扫描已停止：%s 区块，可生成 %s，候选 %s，用时 %s 秒
 rlcompass.shivaxi.notRegistered=注意：RC 结构注册表里没有 %s，这次扫描不可能命中
 rlcompass.shivaxi.unavailable=Recurrent Complex 不可用，无法扫描
-rlcompass.shivaxi.rejected=已排除 %s 个地形不符的位置：%s
+rlcompass.shivaxi.rejected=已排除 %s 个位置（地形不符，或还没被 RC 确认）：%s
 
 # 搜索半径滑条
 gui.rlcompass.radiusValue=半径 %s

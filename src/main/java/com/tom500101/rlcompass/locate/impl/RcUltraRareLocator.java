@@ -24,6 +24,7 @@ import org.apache.logging.log4j.Logger;
 
 import com.tom500101.rlcompass.cache.RecurrentComplexData;
 import com.tom500101.rlcompass.cache.SearchMemory;
+import com.tom500101.rlcompass.config.CompassConfig;
 import com.tom500101.rlcompass.locate.IStructureLocator;
 import com.tom500101.rlcompass.locate.StructureResult;
 import com.tom500101.rlcompass.network.PacketDeepScanResult;
@@ -243,6 +244,49 @@ public class RcUltraRareLocator implements IStructureLocator {
         return TARGETS;
     }
 
+    /**
+     * How the biome at {@code pos} lines up with the shipped targets, one line per ultra-rare plus
+     * a summary for the rest.
+     *
+     * <p>This answers the question a scan cannot: <em>am I standing in the right place?</em> A run
+     * with {@code eligible = 0} means the biome filter never matched, so no radius will help; a run
+     * with a healthy {@code eligible} and no candidate is just a missed roll. Without this the two
+     * look identical from the chat output.
+     */
+    public static List<String> biomeReport(World world, BlockPos pos) {
+        List<String> lines = new ArrayList<String>();
+        if (world == null || pos == null) {
+            lines.add("biome: unknown");
+            return lines;
+        }
+        Biome biome = world.getBiome(pos);
+        if (biome == null) {
+            lines.add("biome: unknown (chunk not generated?)");
+            return lines;
+        }
+        String registry = biome.getRegistryName() == null
+                ? "?" : biome.getRegistryName().toString();
+        lines.add("biome: " + registry + " (" + biome.getBiomeName() + ")");
+        StringBuilder others = new StringBuilder();
+        for (Target target : TARGETS) {
+            boolean match = target.matchesBiome(biome);
+            if ("ultrarare".equalsIgnoreCase(target.category)) {
+                int colon = target.id.indexOf(':');
+                lines.add("  " + (colon >= 0 ? target.id.substring(colon + 1) : target.id)
+                        + ": " + (match ? "MATCH" : "no") + "  [" + target.biomeExpr + "]");
+            } else if (match) {
+                if (others.length() > 0) {
+                    others.append(", ");
+                }
+                others.append(target.rcName);
+            }
+        }
+        if (others.length() > 0) {
+            lines.add("  also matches: " + others);
+        }
+        return lines;
+    }
+
     private final Target target;
 
     public RcUltraRareLocator(Target target) {
@@ -449,15 +493,21 @@ public class RcUltraRareLocator implements IStructureLocator {
         if (target == null || world == null || center == null) {
             return null;
         }
-        double maxSq = (double) radiusBlocks * (double) radiusBlocks;
+        // Square radius, matching how the deep scan walks (Chebyshev): a structure in the corner of
+        // the scanned square is covered by the scan but sits outside a circular radius, so a
+        // Euclidean test here would report "nothing recorded" for a scan that really could find it.
         BlockPos best = null;
         double bestSq = Double.MAX_VALUE;
         for (RecurrentComplexData.Record record : RecurrentComplexData.snapshot(world)) {
             if (!target.matchesId(record.structureId)) {
                 continue;
             }
+            if (Math.abs(record.center.getX() - center.getX()) > radiusBlocks
+                    || Math.abs(record.center.getZ() - center.getZ()) > radiusBlocks) {
+                continue;
+            }
             double sq = StructureResult.horizontalDistanceSq(record.center, center);
-            if (sq <= maxSq && sq < bestSq) {
+            if (sq < bestSq) {
                 bestSq = sq;
                 best = record.center;
             }
@@ -470,8 +520,12 @@ public class RcUltraRareLocator implements IStructureLocator {
                 if (!matches || entry.state == SearchMemory.State.MISSING) {
                     continue;
                 }
+                if (Math.abs(entry.pos.getX() - center.getX()) > radiusBlocks
+                        || Math.abs(entry.pos.getZ() - center.getZ()) > radiusBlocks) {
+                    continue;
+                }
                 double sq = StructureResult.horizontalDistanceSq(entry.pos, center);
-                if (sq <= maxSq && sq < bestSq) {
+                if (sq < bestSq) {
                     bestSq = sq;
                     best = entry.pos;
                 }
@@ -623,8 +677,6 @@ public class RcUltraRareLocator implements IStructureLocator {
         private final Field totalWeightsField;
         /** One-shot diagnostic so the first selector a scan touches reports its weights. */
         private boolean selectorProbed;
-        /** One-shot guard: the ICE surface matcher only needs relaxing once per replay. */
-        private boolean sourceMatcherRelaxed;
         private final Object categoryRegistry;
         private final Method categoryId;
         /** Selectors already rewritten to the deterministic order; identity, one per biome. */
@@ -1138,11 +1190,57 @@ public class RcUltraRareLocator implements IStructureLocator {
                         }
                     }
                 }
-                return false;
+                // RC's save data can be unreadable (a UTFDataFormatException on load), and then it
+                // reads back as an empty set: every real structure looks like "RC did not place it".
+                // That is exactly how two existing ice cities were discarded on 2026-11-07 while
+                // their blocks were standing in the region files. Fall back to this mod's
+                // append-only TSV, which is written from RC's own records and survives a corrupt
+                // .dat.
+                return hasRecordNear(target, x, z);
             } catch (Throwable ignored) {
                 // unknown: keep the candidate rather than hiding a real one
             }
             return true;
+        }
+
+        /**
+         * Same proximity test against this mod's append-only TSV history.
+         *
+         * <p>Used only when RC's own save data answers "nothing", because that answer is ambiguous:
+         * the file can be unreadable and still load as an empty set. The TSV is written from RC's
+         * records when a scan collects them, so a hit there is real evidence that the structure was
+         * placed at some point.
+         */
+        private boolean hasRecordNear(Target target, int x, int z) {
+            for (RecurrentComplexData.Record record : RecurrentComplexData.snapshot(world)) {
+                if (record.structureId == null || !target.matchesId(record.structureId)) {
+                    continue;
+                }
+                if (Math.abs(record.center.getX() - x) <= 96
+                        && Math.abs(record.center.getZ() - z) <= 96) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * The Y RC recorded for {@code target} near {@code (x, z)}, or 64 when there is none.
+         *
+         * <p>Used as the teleport height when the placement dry-run refused the spot but the
+         * structure exists anyway: RC's own record is the better anchor.
+         */
+        int recordY(Target target, int x, int z) {
+            for (RecurrentComplexData.Record record : RecurrentComplexData.snapshot(world)) {
+                if (record.structureId == null || !target.matchesId(record.structureId)) {
+                    continue;
+                }
+                if (Math.abs(record.center.getX() - x) <= 96
+                        && Math.abs(record.center.getZ() - z) <= 96) {
+                    return record.center.getY();
+                }
+            }
+            return 64;
         }
 
         /** The seed the chunk generator hands to RC for this chunk, in this dimension. */
@@ -1261,6 +1359,7 @@ public class RcUltraRareLocator implements IStructureLocator {
             // RC already finalised this chunk's structure set; replaying it is pure waste. This
             // used to be checked after planChunk, which paid for the selector call first.
             if (alreadyProcessed(chunkX, chunkZ)) {
+                deepSkipped++;
                 return 0;
             }
             deepPlanCalls++;
@@ -1286,16 +1385,18 @@ public class RcUltraRareLocator implements IStructureLocator {
                     return found;
                 }
                 budget[0]--;
-                Integer placement = placementY(planned, x, z);
-                if (placement == null) {
-                    LOG.info("[ULTRARARE] compass candidate at ({}, {}) rejected by RC's placer", x, z);
-                    continue;
+                // An existing record is definitive; the dry-run only supplies the teleport Y and is
+                // not allowed to reject a spot RC may well accept at populate time.
+                boolean accepted = hasStructureNear(target, x, z);
+                Placement placement = accepted ? null : placementY(planned, x, z);
+                if (!accepted && materialize(chunkX, chunkZ)) {
+                    accepted = hasStructureNear(target, x, z);
                 }
-                if (placement.intValue() != Y_UNKNOWN && !hasStructureNear(target, x, z)) {
+                if (!accepted) {
                     LOG.info("[ULTRARARE] prediction at ({}, {}) skipped: RC did not place it", x, z);
                     continue;
                 }
-                int y = placement.intValue() == Y_UNKNOWN ? 64 : placement.intValue();
+                int y = placement != null && placement.known() ? placement.y : recordY(target, x, z);
                 out.add(new Hit(new BlockPos(x, y, z), false));
                 found++;
             }
@@ -1376,24 +1477,23 @@ public class RcUltraRareLocator implements IStructureLocator {
          * before. Any other value is {@code StructureBoundingBox.minY}, which the End teleport needs
          * because a floating island has no meaningful "surface" above the structure.
          */
-        Integer placementY(Planned planned, int x, int z) {
+        Placement placementY(Planned planned, int x, int z) {
             if (planned.structure == null || planned.generation == null
                     || !(world instanceof net.minecraft.world.WorldServer)) {
-                return Integer.valueOf(Y_UNKNOWN);
+                return Placement.unknown();
             }
             resolvePlacementClasses();
             if (generatorClass == null || surfacePosClass == null || surfacePosConstructor == null
                     || placerInterface == null || generationTypeClass == null
                     || structureInterface == null) {
-                return Integer.valueOf(Y_UNKNOWN);
+                return Placement.unknown();
             }
             try {
                 Object generator = Reflect.newInstance(generatorClass, new Class<?>[0]);
                 Object placer = Reflect.read(planned.generation, "placer");
                 if (generator == null || placer == null) {
-                    return Integer.valueOf(Y_UNKNOWN);
+                    return Placement.unknown();
                 }
-                relaxSourceMatcher(planned, placer);
                 invokeWith(generator, "structure", new Class<?>[]{structureInterface}, planned.structure);
                 invokeWith(generator, "world",
                         new Class<?>[]{net.minecraft.world.WorldServer.class}, world);
@@ -1409,49 +1509,97 @@ public class RcUltraRareLocator implements IStructureLocator {
                 if (!(box instanceof java.util.Optional) || !((java.util.Optional<?>) box).isPresent()) {
                     return null;
                 }
-                return Integer.valueOf(boxMinY(((java.util.Optional<?>) box).get()));
+                Object value = ((java.util.Optional<?>) box).get();
+                net.minecraft.world.gen.structure.StructureBoundingBox bb =
+                        value instanceof net.minecraft.world.gen.structure.StructureBoundingBox
+                                ? (net.minecraft.world.gen.structure.StructureBoundingBox) value : null;
+                return new Placement(boxMinY(value), bb);
             } catch (Throwable t) {
                 if (!warnedPlacement) {
                     warnedPlacement = true;
                     LOG.warn("[ULTRARARE] placement dry-run failed ({}); candidates stay unverified",
                             t.toString());
                 }
-                return Integer.valueOf(Y_UNKNOWN);
+                return Placement.unknown();
             }
         }
 
         /**
-         * P_IceCity ships with {@code sourceExpression: "ICE"}, but RLCraft's ice plains surface is
-         * mostly snow/grass; every candidate then fails the placer's surface check and
-         * {@code boundingBox()} returns empty. Relax it to {@code "!air"} for this structure only.
+         * One placement dry-run: the base Y RC would use, plus the footprint it would occupy.
+         *
+         * <p>The footprint is only used for diagnostics now. RC's own overlap test runs when the
+         * chunk is <em>populated</em>, which a block read never reaches, so a candidate keeps the
+         * original rule instead: it is reported once RC has a record of it (作者故乡 excepted).
          */
-        private void relaxSourceMatcher(Planned planned, Object placer) {
-            if (!"P_IceCity".equalsIgnoreCase(bareId(planned.id))) {
-                return;
+        static final class Placement {
+            final int y;
+            final net.minecraft.world.gen.structure.StructureBoundingBox box;
+
+            Placement(int y, net.minecraft.world.gen.structure.StructureBoundingBox box) {
+                this.y = y;
+                this.box = box;
             }
+
+            static Placement unknown() {
+                return new Placement(Y_UNKNOWN, null);
+            }
+
+            boolean known() {
+                return y != Y_UNKNOWN;
+            }
+        }
+
+
+        /**
+         * Forces the chunk through population, which is the moment RC actually places structures.
+         *
+         * <p>This is the fix for "the structure is really there but the compass says no": the
+         * placement dry-run only generates terrain, while RC decides at populate time and writes its
+         * record then. Without this step a scan can never see the decision it is asking about, so
+         * "no record" was indistinguishable from "refused" — and on 2026-11-07 that discarded two
+         * ice cities that every world with this seed generates at the same coordinates.
+         *
+         * <p>{@code Chunk.populate} is guarded by {@code isTerrainPopulated}, so a chunk the player
+         * already visited is left alone. Nothing is written that the game would not have written on
+         * arrival; the scan only stops guessing.
+         *
+         * @return true when the chunk is populated and RC's answer is final
+         */
+        boolean materialize(int chunkX, int chunkZ) {
             try {
-                Field field = Reflect.findField(placer.getClass(), "sourceMatcher");
-                if (field == null) {
-                    return;
+                if (!(world instanceof net.minecraft.world.WorldServer)) {
+                    return false;
                 }
-                Object matcher = field.get(placer);
-                if (matcher == null) {
-                    return;
+                net.minecraft.world.gen.ChunkProviderServer provider =
+                        (net.minecraft.world.gen.ChunkProviderServer)
+                                ((net.minecraft.world.WorldServer) world).getChunkProvider();
+                // Chunk.populate bails out unless the four direct neighbours are already loaded
+                // (it looks them up with getLoadedChunk). Generating only the centre chunk is
+                // therefore a no-op: RC never runs, and the structure appears later, when the player
+                // finally loads the area. Measured 2026-11-07 17:45 — (-23516, 6814) was recorded
+                // only when the player teleported, although the scan had "populated" that chunk.
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        if (dx != 0 || dz != 0) {
+                            provider.provideChunk(chunkX + dx, chunkZ + dz);
+                        }
+                    }
                 }
-                Method set = Reflect.findMethod(matcher.getClass(), "setExpression", String.class);
-                if (set == null) {
-                    return;
+                net.minecraft.world.chunk.Chunk chunk = provider.provideChunk(chunkX, chunkZ);
+                if (chunk == null) {
+                    return false;
                 }
-                set.invoke(matcher, "!air");
-                if (!sourceMatcherRelaxed) {
-                    sourceMatcherRelaxed = true;
-                    LOG.info("[ULTRARARE] relaxed P_IceCity sourceMatcher to '!air' (was ICE)");
+                if (!chunk.isTerrainPopulated()) {
+                    chunk.populate(provider, provider.chunkGenerator);
                 }
+                return true;
             } catch (Throwable t) {
-                if (!sourceMatcherRelaxed) {
-                    sourceMatcherRelaxed = true;
-                    LOG.warn("[ULTRARARE] could not relax P_IceCity sourceMatcher: {}", t.toString());
+                if (!warnedMaterialize) {
+                    warnedMaterialize = true;
+                    LOG.warn("[ULTRARARE] could not populate a candidate chunk ({}); candidates "
+                            + "stay unverified", t.toString());
                 }
+                return false;
             }
         }
 
@@ -1686,21 +1834,20 @@ public class RcUltraRareLocator implements IStructureLocator {
                 if (replay.alreadyProcessed(chunkX, chunkZ)) {
                     continue;
                 }
-                Integer placement = replay.placementY(planned, x, z);
-                if (placement == null) {
+                // An existing record is definitive; the dry-run only supplies the teleport Y.
+                boolean accepted = replay.hasStructureNear(target, x, z);
+                Replay.Placement placement = accepted ? null : replay.placementY(planned, x, z);
+                if (!accepted && replay.materialize(chunkX, chunkZ)) {
+                    accepted = replay.hasStructureNear(target, x, z);
+                }
+                if (!accepted) {
                     if (rejected != null && rejected.length > 0) {
                         rejected[0]++;
                     }
                     continue;
                 }
-                if (placement.intValue() != Replay.Y_UNKNOWN
-                        && !replay.hasStructureNear(target, x, z)) {
-                    if (rejected != null && rejected.length > 0) {
-                        rejected[0]++;
-                    }
-                    continue;
-                }
-                int y = placement.intValue() == Replay.Y_UNKNOWN ? 64 : placement.intValue();
+                int y = placement != null && placement.known()
+                        ? placement.y : replay.recordY(target, x, z);
                 out.add(new BlockPos(x, y, z));
             }
             return out;
@@ -1947,6 +2094,34 @@ public class RcUltraRareLocator implements IStructureLocator {
      * one {@code getBiomes} call amortises the GenLayer chain over 256 chunks instead.
      */
     private static final long TICK_BUDGET_NANOS = 8_000_000L;
+    /**
+     * Experimental budget used when {@code CompassConfig.turboScan} is on.
+     *
+     * <p>40 ms of a 50 ms tick leaves the server barely enough room for its own work, so TPS drops
+     * to roughly 14-16 while a scan runs. It is the single cheapest speed-up available: the scan is
+     * only ~8% duty cycle at 8 ms, so 92% of a normal run is spent waiting for the next tick. Above
+     * ~40 ms the curve flattens — the remaining time is real CPU work, not waiting.
+     */
+    private static final long TURBO_TICK_BUDGET_NANOS = 40_000_000L;
+    /**
+     * Turbo-mode RNG prefilter for the generic ultrarare scan, identical to the parameters the
+     * Author's Hall scanner has been running with ({@code AuthorHallFastScan}): 64 rolls,
+     * threshold {@code 1e-4}, which passes 0.64% of chunks.
+     *
+     * <p>This is what makes the two paths comparable. Without it the generic scan has to sample
+     * the biome of every chunk (a 256-chunk {@code getBiomes} call per tile, ~4.3 us/chunk) and
+     * then replay every chunk that matches the biome (2.5% for ice, 5% for snowy). With it, only
+     * the survivors are sampled, one {@code getBiome} each.
+     *
+     * <p>Risk, recorded deliberately: the filter assumes the {@code ultrarare} roll lands within
+     * the first 64 {@code nextDouble()} calls. The pinned category order puts ultrarare last, and
+     * every passing category before it consumes extra rolls, so this is empirical rather than
+     * proven — see HANDOFF §36 / §38. It is only enabled in turbo mode, so a normal scan keeps the
+     * exhaustive path.
+     */
+    private static final int TURBO_PREFILTER_DRAWS = 64;
+    private static final double TURBO_PREFILTER_CHANCE = 1.0E-4;
+
     /** Chunks per side of one batched biome tile; 16 chunks = 256 blocks. */
     private static final int TILE_CHUNKS = 16;
     private static final int TILE_BLOCKS = TILE_CHUNKS * 16;
@@ -1966,9 +2141,17 @@ public class RcUltraRareLocator implements IStructureLocator {
     private static int deepRing;
     private static int deepIndex;
     private static int deepScanned;
+    /** Chunks that survived the turbo prefilter; only these get a biome lookup. */
+    private static int deepPrefiltered;
     private static int deepSnowy;
     private static int deepCandidates;
     private static int deepRejected;
+    /**
+     * Chunks RC already finished. A replay there would re-answer a settled question, and the answer
+     * would be "nothing", which is exactly what made a real structure look unfindable: the hit was
+     * generated on the previous run, so the second scan skipped its chunk and reported 0 candidates.
+     */
+    private static int deepSkipped;
     /**
      * Diagnostics for "0 candidates": how many structures the replay planned at all, and how many
      * of those were the target. Zero target plans means the selector never picked it (chance,
@@ -2008,6 +2191,8 @@ public class RcUltraRareLocator implements IStructureLocator {
     private static final List<BlockPos> DEEP_REJECTED = new ArrayList<BlockPos>();
     /** Reused biome buffer for one tile; 256x256 blocks. */
     private static Biome[] deepBiomes;
+    /** Reused position for the per-chunk biome lookup in turbo mode; no allocation per survivor. */
+    private static final BlockPos.MutableBlockPos DEEP_PROBE = new BlockPos.MutableBlockPos();
     /** {@code BiomeDictionary} lookups are not free and there are only a few dozen biomes. */
     private static final Map<Biome, Boolean> SNOWY_CACHE = new IdentityHashMap<Biome, Boolean>();
 
@@ -2080,9 +2265,11 @@ public class RcUltraRareLocator implements IStructureLocator {
         deepRing = 0;
         deepIndex = 0;
         deepScanned = 0;
+        deepPrefiltered = 0;
         deepSnowy = 0;
         deepCandidates = 0;
         deepRejected = 0;
+        deepSkipped = 0;
         deepPlanned = 0;
         deepTargetPlanned = 0;
         deepPlanCalls = 0;
@@ -2097,10 +2284,14 @@ public class RcUltraRareLocator implements IStructureLocator {
         DEEP_REJECTED.clear();
         SNOWY_CACHE.clear();
         long total = (2L * deepRadius + 1L) * (2L * deepRadius + 1L);
+        boolean turboPrefilter = CompassConfig.turboScan
+                && "ultrarare".equalsIgnoreCase(deepTarget.category);
         LOG.info("[ULTRARARE] deep scan for {} started at chunk({},{}) radius {} chunks "
-                        + "({} blocks, {} chunks to walk)",
+                        + "({} blocks, {} chunks to walk){}{}",
                 deepTarget.rcName, deepCenterX, deepCenterZ, deepRadius,
-                (long) deepRadius * 16L, total);
+                (long) deepRadius * 16L, total, turboTag(),
+                turboPrefilter ? "; prefilter " + TURBO_PREFILTER_DRAWS + " draws < "
+                        + TURBO_PREFILTER_CHANCE : "");
         // If the structure is not in RC's registry, no amount of scanning can ever hit it — say so
         // before the player waits five minutes for nothing.
         if (!isRegistered(replay, deepTarget)) {
@@ -2157,6 +2348,39 @@ public class RcUltraRareLocator implements IStructureLocator {
         return summary;
     }
 
+    /**
+     * Current per-tick slice for the running target: 40 ms in experimental turbo mode, 8 ms
+     * otherwise.
+     *
+     * <p>Read every tick rather than captured at start, so toggling the switch applies to a running
+     * scan on the next tick.
+     *
+     * <p>The turbo budget is gated on {@code ultrarare}: this scanner also serves {@code adventure}
+     * and the village-family targets, and the switch is only meant for the three ultra-rares.
+     */
+    private static long tickBudgetNanos() {
+        return turboActiveFor(deepTarget) ? TURBO_TICK_BUDGET_NANOS : TICK_BUDGET_NANOS;
+    }
+
+    /**
+     * Whether the experimental budget applies to {@code target}.
+     *
+     * <p>Applies to every RC target, not just the ultra-rares: the village family, the adventure
+     * structures and the End structures all run the same tick-sliced tile scan, and users asked for
+     * the whole hot-structure list to benefit. Non-RC locators (dragon roost, battletowers) are
+     * synchronous region scans and are not affected by this switch at all.
+     */
+    private static boolean turboActiveFor(Target target) {
+        return CompassConfig.turboScan && target != null;
+    }
+
+
+    /** Suffix for scan log lines, so a turbo run is never confused with a normal one. */
+    static String turboTag() {
+        return turboActiveFor(deepTarget) ? " [turbo " + (TURBO_TICK_BUDGET_NANOS / 1_000_000L)
+                + " ms/tick]" : "";
+    }
+
     /** Called from the server tick; does a few milliseconds of work and returns. */
     public static void tickDeepScan() {
         Replay replay = deepReplay;
@@ -2169,7 +2393,7 @@ public class RcUltraRareLocator implements IStructureLocator {
         if (provider == null) {
             return;
         }
-        long deadline = System.nanoTime() + TICK_BUDGET_NANOS;
+        long deadline = System.nanoTime() + tickBudgetNanos();
         while (System.nanoTime() < deadline) {
             if (deepFirstHit) {
                 String summary = summarizeDeepScan("first hit");
@@ -2204,6 +2428,12 @@ public class RcUltraRareLocator implements IStructureLocator {
                 if (deepCandidates == 0) {
                     tell(deepPlayer, "rlcompass.shivaxi.none",
                             Long.valueOf(deepScanned), Long.valueOf(deepSnowy), Long.valueOf(seconds));
+                    if (deepSkipped > 0) {
+                        // Otherwise "0 candidates" reads like "it is not there", while the structure
+                        // may be sitting in the save: its chunk finished on an earlier run.
+                        tell(deepPlayer, "rlcompass.shivaxi.alreadyGenerated",
+                                Integer.valueOf(deepSkipped));
+                    }
                     PacketHandler.sendToPlayer(PacketDeepScanResult.miss(target.id,
                             world.provider.getDimension(), deepRadius), deepPlayer);
                 } else {
@@ -2231,24 +2461,40 @@ public class RcUltraRareLocator implements IStructureLocator {
                 deepRing++;
                 deepIndex = 0;
             }
-            scanTile(replay, provider, tileX, tileZ, target);
+            scanTile(replay, provider, world, tileX, tileZ, target);
         }
     }
 
     /**
-     * Samples one 16x16-chunk tile in a single {@code getBiomes} call, then replays only the chunks
-     * whose biome can hold {@code target}.
+     * Replays the chunks of one 16x16-chunk tile whose biome can hold {@code target}.
+     *
+     * <p>Two orders, chosen by mode:
+     *
+     * <ul>
+     *   <li><b>Normal</b> — sample the whole tile in one {@code getBiomes} call (~4.3 us/chunk),
+     *       then replay the chunks whose biome matches (2.5% for ice, 5% for snowy). Exhaustive:
+     *       every chunk is looked at.</li>
+     *   <li><b>Turbo + ultrarare</b> — roll the 64-draw prefilter first (0.2 us/chunk, 0.64%
+     *       survive), then a single {@code getBiome} per survivor. Sampling up front would cost
+     *       the same whether or not a chunk can hold the target, which is where the generic scan
+     *       used to spend two thirds of its time.</li>
+     * </ul>
      */
     private static void scanTile(Replay replay,
                                  net.minecraft.world.biome.BiomeProvider provider,
+                                 World world,
                                  int tileX, int tileZ, Target target) {
+        boolean prefilter = CompassConfig.turboScan
+                && "ultrarare".equalsIgnoreCase(target.category);
         Biome[] biomes = deepBiomes;
-        try {
-            provider.getBiomes(biomes, tileX * TILE_BLOCKS, tileZ * TILE_BLOCKS,
-                    TILE_BLOCKS, TILE_BLOCKS, false);
-        } catch (Throwable t) {
-            // IntCache can refuse very large requests; skip this tile rather than abort the scan.
-            return;
+        if (!prefilter) {
+            try {
+                provider.getBiomes(biomes, tileX * TILE_BLOCKS, tileZ * TILE_BLOCKS,
+                        TILE_BLOCKS, TILE_BLOCKS, false);
+            } catch (Throwable t) {
+                // IntCache can refuse very large requests; skip this tile rather than abort the scan.
+                return;
+            }
         }
         for (int ddz = 0; ddz < TILE_CHUNKS; ddz++) {
             for (int ddx = 0; ddx < TILE_CHUNKS; ddx++) {
@@ -2259,7 +2505,21 @@ public class RcUltraRareLocator implements IStructureLocator {
                     continue;
                 }
                 deepScanned++;
-                Biome biome = biomes[(ddz * 16) * TILE_BLOCKS + ddx * 16];
+                Biome biome;
+                if (prefilter) {
+                    if (!rngPrefilter(replay.chunkSeedAt(chunkX, chunkZ),
+                            TURBO_PREFILTER_DRAWS, TURBO_PREFILTER_CHANCE)) {
+                        continue;
+                    }
+                    deepPrefiltered++;
+                    DEEP_PROBE.setPos(chunkX * 16 + 8, 64, chunkZ * 16 + 8);
+                    biome = world.getBiome(DEEP_PROBE);
+                    if (biome == null) {
+                        continue;
+                    }
+                } else {
+                    biome = biomes[(ddz * 16) * TILE_BLOCKS + ddx * 16];
+                }
                 if (!target.matchesBiome(biome)) {
                     continue;
                 }
@@ -2284,32 +2544,29 @@ public class RcUltraRareLocator implements IStructureLocator {
                                 + "processed that chunk", x, z, chunkX, chunkZ);
                         continue;
                     }
-                    // Selection said yes; ask RC's own placer whether the terrain agrees. This is the
-                    // step that rejected three of the first four live candidates.
-                    Integer placement = replay.placementY(planned, x, z);
-                    if (placement == null) {
+                    // An existing record is definitive: RC already placed it here.
+                    boolean confirmed = replay.hasStructureNear(target, x, z);
+                    // The dry-run now only supplies the teleport Y. Its refusal is NOT authoritative:
+                    // RC decides for real at populate time, and it accepts spots the dry-run rejects.
+                    // Measured 2026-11-07: (-23516, 6814) is a real ice city in this very save, yet
+                    // the ICE surface check fails there during the dry-run, which used to hide it.
+                    Replay.Placement placement = confirmed ? null : replay.placementY(planned, x, z);
+                    if (!confirmed && replay.materialize(chunkX, chunkZ)) {
+                        confirmed = replay.hasStructureNear(target, x, z);
+                    }
+                    if (!confirmed) {
                         deepRejected++;
                         DEEP_REJECTED.add(new BlockPos(x, 64, z));
-                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) rejected by RC's placer",
-                                x, z, chunkX, chunkZ);
-                        continue;
-                    }
-                    // Only a real dry-run generated the chunk; Y_UNKNOWN means RC never looked, so
-                    // the absence of a record proves nothing.
-                    if (placement.intValue() != Replay.Y_UNKNOWN
-                            && !replay.hasStructureNear(target, x, z)) {
-                        // The dry-run generated the chunk, so RC has already decided: it refused this
-                        // spot (usually an overlap with a structure generated first). Reporting it
-                        // would teleport the player onto an empty field.
-                        deepRejected++;
-                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) skipped: RC generated "
-                                        + "the chunk during the dry-run and did not place it",
+                        LOG.info("[ULTRARARE] candidate at ({}, {}) chunk({},{}) skipped: RC did not "
+                                        + "place it even after the chunk was populated",
                                 x, z, chunkX, chunkZ);
                         continue;
                     }
                     deepCandidates++;
-                    int candidateY = placement.intValue() == Replay.Y_UNKNOWN
-                            ? 64 : placement.intValue();
+                    // Teleport Y: the dry-run's base when it managed to answer, otherwise the height
+                    // RC recorded for the structure (a confirmed candidate is already in the save).
+                    int candidateY = placement != null && placement.known()
+                            ? placement.y : replay.recordY(target, x, z);
                     BlockPos candidate = new BlockPos(x, candidateY, z);
                     deepHits(target.id).add(new Hit(candidate, false));
                     // Record it in the warehouse so a spot that turns out to be empty can be marked
@@ -2322,9 +2579,12 @@ public class RcUltraRareLocator implements IStructureLocator {
                     }
                     // The recorded anchor of an RC structure sits up to ~3 chunks from the chunk that
                     // planned it, so the structure can be up to ~48 blocks away from this point.
-                    LOG.info("[ULTRARARE] deep scan candidate #{} for {} at ({}, ~, {}) chunk({},{}) "
-                                    + "verified by RC's placer; {} chunks scanned",
-                            deepCandidates, target.rcName, x, z, chunkX, chunkZ, deepScanned);
+                    LOG.info("[ULTRARARE] deep scan candidate #{} for {} at ({}, ~, {}) chunk({},{}) {}; "
+                                    + "{} chunks scanned",
+                            deepCandidates, target.rcName, x, z, chunkX, chunkZ,
+                            confirmed ? "confirmed by RC's record"
+                                    : "predicted, RC decides when the chunk is populated",
+                            deepScanned);
                     tell(deepPlayer, "rlcompass.shivaxi.candidate", Integer.valueOf(deepCandidates),
                             Integer.valueOf(chunkX), Integer.valueOf(chunkZ),
                             Integer.valueOf(x), Integer.valueOf(z));
@@ -2343,9 +2603,10 @@ public class RcUltraRareLocator implements IStructureLocator {
                 }
                 if (deepScanned >= deepNextProgress) {
                     deepNextProgress += PROGRESS_EVERY;
-                    LOG.info("[ULTRARARE] deep scan progress: {} chunks, {} eligible, {} candidate(s), "
-                                    + "tile ring {}/{}, {} s",
-                            deepScanned, deepSnowy, deepCandidates, deepRing, deepTileRadius,
+                    LOG.info("[ULTRARARE] deep scan progress: {} chunks, {} prefiltered, "
+                                    + "{} eligible, {} candidate(s), tile ring {}/{}, {} s",
+                            deepScanned, deepPrefiltered, deepSnowy, deepCandidates,
+                            deepRing, deepTileRadius,
                             (System.currentTimeMillis() - deepStartedAt) / 1000L);
                 }
             }
@@ -2366,9 +2627,12 @@ public class RcUltraRareLocator implements IStructureLocator {
             hits.append('(').append(pos.getX()).append(',').append(pos.getZ()).append(") ");
         }
         return "deep scan " + state + " (" + (deepTarget == null ? "?" : deepTarget.rcName) + "): "
-                + deepScanned + " chunks, " + deepSnowy + " eligible, "
-                + deepCandidates + " candidate(s), " + deepRejected + " rejected by the placer in "
+                + deepScanned + " chunks, " + deepPrefiltered + " prefiltered, "
+                + deepSnowy + " eligible, "
+                + deepCandidates + " candidate(s), " + deepRejected + " rejected by the placer, "
+                + deepSkipped + " already generated in "
                 + ((System.currentTimeMillis() - deepStartedAt) / 1000L) + " s"
+                + turboTag()
                 + (hits.length() == 0 ? "" : "; " + hits);
     }
 
@@ -2446,6 +2710,8 @@ public class RcUltraRareLocator implements IStructureLocator {
     private static boolean warnedNoWeightsField;
     /** One-shot guard for the placement dry-run, which is best-effort. */
     private static boolean warnedPlacement;
+    /** One-shot guard for the forced population, which is best-effort too. */
+    private static boolean warnedMaterialize;
     /** Orderings already reported, so a per-biome selector does not repeat the same line. */
     private static final Set<String> LOGGED_ORDERS =
             Collections.synchronizedSet(new java.util.HashSet<String>());
