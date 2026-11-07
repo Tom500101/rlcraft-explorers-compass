@@ -10,10 +10,16 @@
 [![License](https://img.shields.io/badge/License-MIT%20%2B%20CC%20BY--NC--SA%204.0-4C8CBF?style=flat-square)](LICENSE)
 
 <p align="center">
-  <img src="docs/images/gui.png" alt="结构选择界面：左侧操作区，右侧结构列表带生成维度标注" width="880">
+  <img src="docs/images/gui-1.3.png" alt="1.3.0 的结构选择界面：左侧是搜索、热门结构、排序、缓存仓库与半径滑条，右侧列表标出每个结构的来源、ID 与生成维度" width="880">
 </p>
 
-<p align="center"><sub>结构选择界面：左侧是搜索 / 排序 / 缓存仓库 / 半径滑条，右侧列表标出每个结构的生成维度</sub></p>
+<p align="center"><sub><b>1.3.0 界面</b>：左侧新增「热门结构」入口，右侧列表标出每个结构的来源、ID 与生成维度</sub></p>
+
+<p align="center">
+  <img src="docs/images/gui.png" alt="1.2.0 及更早版本的结构选择界面（旧版，保留作对比）" width="880">
+</p>
+
+<p align="center"><sub>1.2.0 及更早版本的界面（旧版，保留作对比）</sub></p>
 
 ## 这是什么
 
