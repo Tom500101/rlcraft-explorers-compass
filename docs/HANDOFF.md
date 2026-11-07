@@ -2169,3 +2169,621 @@ SHA256 `74046863115c5f1c54dc26ee10e1d57eeb51c6d030553b94fd56120baa23fa21`，
 发布走的是 API（本机 22 端口被封，HTTPS 的 `git push` 又受 schannel 吊销检查限制，
 `curl --ssl-no-revoke` 可用）：先用 `POST /git/refs` 建 tag，再 `POST /releases`，
 最后 `POST /uploads.github.com/.../assets` 传 jar。README 的下载链接与校验值同步改为 1.2.0。
+
+## 45. 实验开关 turboScan：把三个超稀有的占空比拉满（2026-11-06 23:55）
+
+### 45.1 数据依据
+一次 `authorshall 5600` 实机扫描（18:08–18:30）：156,275,001 chunk / 1293 秒，
+其中 995,767 个通过预筛。按 4 ms/tick 计算，有效 CPU 只有约 103 秒，
+其余 **1192 秒都在等下一个 tick**。CPU 分解：
+
+| 阶段 | 单 chunk 成本 | 总量 | 纯 CPU |
+| --- | --- | --- | --- |
+| RNG 预筛（64 draws，内联 LCG） | ~0.2 µs | 1.56 亿 | ~31 s |
+| biome 采样（幸存 0.64%） | ~70 µs | ~100 万 | ~70 s |
+| RC 重放 + 放置试算 | 毫秒级 | 2,140 | <1 s |
+
+所以把预算提到 40 ms 就能把 21 分钟压到约 2 分钟；再往上没有意义，剩下的都是真 CPU 时间。
+
+### 45.2 实现
+- `CompassConfig.turboScan`（默认 `false`，写进 `config/rlcompass.cfg`），注释写明只影响三个
+  超稀有、以及 TPS 代价。
+- `/rlcompass turbo [on|off]`：改字段 → `ConfigManager.sync` 写盘 → **再把值写回字段**。
+  这一步是必须的，和半径那次踩的坑同源：`sync` 会重读文件，把旧值盖回来。
+  不带参数只报当前状态。
+- 预算在 `tickDeepScan()` 与 `AuthorHallFastScan.tick()` 里**每 tick 读一次**，
+  所以热切换对正在跑的扫描下一个 tick 就生效，不需要重开扫描。
+- 日志与 summary 追加 `[turbo 40 ms/tick]`，两次跑测不会混。
+- `rare`（`RcFastScan`）完全没动：用户只要三个超稀有。
+- 顺手做了一项零风险微优化：作者大厅快扫的 deadline 检查从「每 chunk 一次」改成
+  「每 128 chunk 一次」。1.56 亿 chunk 的跑测里 `System.nanoTime()` 本身约 4 秒；
+  128 chunk 一批最坏 128 × 70 µs ≈ 9 ms，不会显著超支。
+
+### 45.3 实测（2026-11-07 00:11–00:17，本机，三场连跑）
+| 命令 | 扫描量 | 耗时 | 吞吐 | 对比非 turbo |
+| --- | --- | --- | --- | --- |
+| `scan icecity 2400` | 23,049,601 | **149 s** | 154.7k/s | 37.2k/s → **4.2×** |
+| `scan shivaxi 1200` | 5,116,776（中途命中） | **34 s** | 150.5k/s | 37.2k/s → **4.0×** |
+| `scan authorshall 5600` | 125,462,401 | **111 s** | 1.13M/s | 121k/s → **9.4×** |
+
+- 基准吞吐：8 ms 的通用深扫取 19:50 那次（5,764,801 / 155 s = 37.2k/s）；
+  4 ms 的作者大厅取 18:08 那次（156,275,001 / 1293 s = 121k/s）。
+- 作者大厅倍率接近 4→40 ms 的理论值 10 倍；通用深扫只有 4 倍（8→40 是 5 倍，
+  且 tile 采样在其中的占比更大）。
+- 预筛比例稳定：这次 `801,562 / 125,462,401 = 0.639%`，上次 `995,767 / 156,275,001 = 0.637%`，
+  说明 64 draws 的行为没有随版本漂移。
+- `Can't keep up!` 111 秒内出现 **18 次**；用户实机反馈「没觉得很卡」。
+- P_IceCity 仍是 0 candidate，但 `rejected = 4`：`578,424 × 7.5e-6 ≈ 4.3` 个期望选中，
+  选中数与期望吻合，全部被 placer 的表面条件拒掉——再次确认是地形问题，不是扫描器。
+- Shivaxi 命中 `(9086, ~, -18068)`，`0 rejected`，试算直接通过。
+
+复测命令（重启游戏后）：
+
+```mcfunction
+/rlcompass turbo on
+/rlcompass scan authorshall 5600
+```
+
+验收要点：日志开头变成
+`[FASTHALL] fast scan for RLCraft_2_9_Update_Build started ... [turbo 40 ms/tick]`；
+`/rlcompass turbo` 单独执行应报 `turbo is ON`。
+
+### 45.4 边界
+- 40 ms 是刻意选的上界：MC 自身每 tick 还要 5–10 ms，45 ms 之后只是更卡，不会更快。
+- 想再快一个数量级必须并行化 biome 采样（101 秒里占 70 秒）。要处理 `BiomeCache` 共享
+  （`IntCache` 是 ThreadLocal，GenLayer 无状态，但 `BiomeCache` 不是），而且候选必须回主线程
+  做 `planChunk` / 放置试算。本次没做，属于后续可选路线。
+- 部署：`405,088` 字节，SHA-256 `0b909e9f…`，`mods/` 同哈希。
+  版本仍 **1.2.0**，**未提交、未推送**。
+
+### 45.5 范围修正
+第一版 `tickBudgetNanos()` 只看 `turboScan`，会把 `adventure`、`plainscity` 等也一起提速——
+通用 tile 深扫不只服务超稀有。已改为 `turboActiveFor(deepTarget)`，只有
+`category == "ultrarare"` 才用 40 ms；`turboTag()` 同步判断，日志不会误标。
+
+### 45.6 turbo 下通用深扫也走预筛（00:29）
+用户要求「统一速度」。差距的原因有两条：
+
+1. 通用深扫必须**先**全量 tile 采样（`getBiomes`，等效 4.3 µs/chunk），才能知道哪个 chunk
+   是冰原/雪原——这一项占了 149 秒里的约 99 秒；
+2. 每个匹配群系的 chunk 都要 `planChunk`（冰原 2.5%、雪原 5%，单次约 86 µs），占约 50 秒。
+
+改法：`scanTile` 在 `turboScan && ultrarare` 时**调换顺序**——先跑 64 draws / `1e-4` 预筛
+（0.2 µs/chunk，放行 0.64%），只对幸存者调一次 `world.getBiome`（复用 `MutableBlockPos`），
+再判定群系并重放。参数与 `AuthorHallFastScan` 完全一致，是同一条预筛模型。
+`turbo` 关闭时仍走原来的全量 tile 采样，行为零变化。
+
+- 新增统计：`summary` / `progress` 增加 `prefiltered` 字段，便于对比。
+- 预期（`icecity 2400`，2305 万 chunk）：149 s → 约 20 s。
+
+**召回验证（关键）**：用当前世界（`测试-8`，seed `-7876235295239507746`）核对已知真命中
+`Shivaxi chunk(567,-1130)`：
+
+```text
+chunkSeed = -6435037275818507861
+64 draws : min = 2.60404e-06 @ draw 4  -> PASS (阈值 1e-4)
+```
+
+draw 4 正好对应「前 4 个类别各掷一次、ultrarare 排最后」的结构，也解释了作者大厅 64 draws
+为什么一直有效。**验收标准**：预筛版 `scan shivaxi 1200` 必须仍然返回 `(9086, ~, -18068)`；
+如果变成 0 candidate，说明预筛漏判，立即回退。
+
+一处错误的统计，记下来以免重犯：曾用「256 次内出现 `< 2.25e-5`」当目标代理，算出「75% 被
+64-draw 挡住」。这是必然结果而非证据——最小值位置在 0–255 上均匀分布，落在 64 之后本来就是
+75%。代理指标不能代替真实掷点位置，和 §36 是同一类错误。
+
+部署：`405,483` 字节，SHA-256 `a326d265…`，`mods/` 同哈希。未提交、未推送。
+
+### 45.7 命令短路、方形半径与「已生成」播报（11:41）
+用户清空缓存仓库后重扫 `shivaxi 1200`，仍然 0 candidate。结论：**不是预筛漏判**。
+
+- RC 记录里有 `Shivaxi 9086 131 -18068`；region 里 `chunk(567,-1130)`（`r.17.-36.mca`，
+  offset=98，sectors=3）**已经生成**。
+- 该 chunk 在 00:14 被预测到，玩家传送过去后生成，RC 就此定稿。11:35 再扫，
+  `alreadyProcessed` 命中并跳过（设计如此：已定稿的区块重放只会回答「当年被拒绝」），
+  于是 0 candidate。
+- 两个真实缺陷：① 命令路径从不查 `knownHit`（只有 GUI 的 `DeepScanService` 查）；
+  ② 跳过完全静默，玩家无法判断为什么 0 候选。
+- 另外 `knownHit` 用欧氏距离、扫描用方形：`|x|=9086`、`|z|=18068` 的欧氏距离 20,226
+  超过半径 19,200，造成「扫描覆盖得到、记录却查不到」的错位。
+
+修复：
+1. `CommandRLCompass` 的 `scan`（仅 `firstOnly`）与 `shivaxi` 分支先调 `knownHit`，
+   命中直接回 `already recorded: ... — append all to force a full re-scan`；
+2. `knownHit` 改方形判断，与扫描覆盖一致；
+3. 新增 `deepSkipped` 计数与 summary 的 `already generated`；0 候选时额外播报
+   `rlcompass.shivaxi.alreadyGenerated`。
+
+### 45.8 预筛召回核对（`icecity 6250`，11:49）
+```text
+156,275,001 chunks, 998,022 prefiltered, 24,730 eligible,
+0 candidate(s), 28 rejected, 0 already generated in 103 s
+```
+
+- 吞吐 152 万 chunk/s，对比 11-06 折算的约 8.4 万/s，**18 倍**。
+- **候选数验证召回**：24,730 是「预筛放行的冰原 chunk」，条件概率
+  `7.5e-6 / 0.00638 ≈ 1.18e-3`，期望 `24,730 × 1.18e-3 = 29.3`，实测 28，误差 4%。
+  反推冰原总数 `24,730 / 0.00638 = 388 万`，与 1.56 亿 × 2.5% 一致。
+  说明预筛放行的集合保住了真实命中。
+- 28 个候选全被「生成后核实」拒：`P_IceCity` 的 `sourceExpression` 是 `ICE`，
+  而 Shivaxi 与作者大厅是 `!(air | reccomplex:generic_space)`。冰原表面多为雪层/冻土，
+  只有冻湖冰面才满足，所以「选得中、放不下」。
+
+部署：`406,055` 字节，SHA-256 `22cd1a0e…`，`mods/` 同哈希。未提交、未推送。
+
+### 45.9 `/rlcompass biome`（12:15）
+用户给出一条产品原则，写在这里以免以后再偏离：**只做搜索，永远不改游戏本来的内容**。
+具体到 P_IceCity，就是拒绝加「运行时把 `sourceMatcher` 从 `ICE` 放宽成 `!air`」的开关——
+那不是搜索工具该做的事。因此本轮只增加诊断能力。
+
+- `RcUltraRareLocator.biomeReport(World, BlockPos)`：首行是群系注册名与显示名，随后三个
+  ultrarare 目标各一行 `MATCH` / `no` 加各自表达式，最后一行汇总其他匹配的目标。
+- 命令 `/rlcompass biome`：直接输出上述行。
+- 用途：区分「站错地方」与「运气不好」。扫描日志里 `eligible = 0` 表示群系判定从未通过，
+  加半径没有意义；`eligible` 正常而 `candidate = 0` 才是这一次掷点没中。
+
+部署：`406,872` 字节，SHA-256 `dc7fe83a…`，`mods/` 同哈希。未提交、未推送。
+
+### 45.10 热门按钮覆盖半径、turbo 扩展到全部 RC 目标（13:42）
+用户反馈：从热门列表里搜龙穴 / 沙漠黄金殿 / 绿宝石穹顶 / 普通黄金殿 / 两种城镇 / 海港时，
+半径从 100000 掉回 10000。
+
+根因在 `GuiStructureSelect.searchHot`：
+
+```java
+int recommended = StructureNameUtil.isUltraRare(structureId) ? 100000 : 10000;
+if (CompassConfig.searchRadius != recommended) { ... radiusSlider.setValue(recommended);
+                                                     persistRadius(); }
+```
+
+对非超稀有结构它把半径**写死成 10000 并落了盘**，所以点一下热门就等于把玩家的 100000 改掉。
+修复后只对三个超稀有保证下限 100000，其余沿用滑条当前值。
+
+turbo 同步扩展，用户要求「所有热门结构都加速，功能不变」：
+- `turboActiveFor` 去掉 `category == "ultrarare"` 限制 → `adventure`、两种城镇、海港、
+  罪恶学院、末地三结构都按 40 ms/tick 跑；
+- `RcFastScan` 增加 `TURBO_TICK_BUDGET_NANOS` 与 `tickBudgetNanos()`，summary 追加
+  `[turbo 40 ms/tick]`；
+- 龙穴（`DragonRoostLocator`）与战斗塔是**同步 region 扫描**，不走 tick 分片，
+  这个开关对它们不适用——它们慢是因为一次性读 region 文件，不是等待 tick。
+
+关于用户「换了模型是不是改坏了什么」的疑问，用存档数据回答：`测试` 存档两个 P_IceCity
+所在 region 的生成时间是 **11-05 22:34 / 23:35**，早于 11-06 19:25 的 `.rcst` 修改，更早于
+本轮任何改动，所以原版就能生成；`测试-9` 的 94 次选中 0 落地，是因为 20/20 候选的 96 格内
+都有 Y≥45 的中型结构（`JokerTower` / `UnnaturalCrater` / `NetherPortal` / `P_SnowTemple` 等），
+`entriesAt(boundingBox)` 判定相交。与代码改动无关。
+
+部署：`407,006` 字节，SHA-256 `35f7a2e2…`，`mods/` 同哈希。未提交、未推送。
+
+### 45.11 真 bug：RC 数据损坏导致「生成后核实」误杀（14:22）
+用户用 `测试的副本`（与 `测试` 同种子 `1392971457497389007`）从 (0,0) 搜 100000 格，
+两座真实存在的 P_IceCity 没被报出，但 tp 过去方块确实在。
+
+日志把过程写得很清楚：
+
+```text
+[14:09:34] candidate at (-23516, 6814) chunk(-1471,425) skipped: RC generated the chunk during the dry-run and did not place it
+[14:09:38] candidate at (-29839, 14842) chunk(-1866,927) skipped: RC generated the chunk during the dry-run and did not place it
+```
+
+**扫描器的预测完全正确**——两个坐标与 11-05 实测生成的结构分毫不差。错在核实环节：
+
+- 副本的 `reccomplex-structuredata.dat` 读取失败（`UTFDataFormatException: malformed input
+  around byte 9`），RC 把它当作空数据；
+- `getEntriesByID(target.rcName)` 于是在空集合上返回空，`hasStructureNear` 判定「没放」，
+  候选被丢弃。
+
+修复：`Replay.hasStructureNear` 在 RC 数据回答「没有」时回退到 `RecurrentComplexData.snapshot`
+（本模组的 append-only TSV），±96 格内命中即保留候选。TSV 是从 RC 的 `[RC] recorded ...`
+日志写出来的，属于「确实生成过」的直接证据。
+
+顺带核对预筛召回：用日志里的**真实 chunk**（注意不是 `x>>4`，RC 记录的圆心偏移一格）重算——
+
+| chunk | 64 draws 最小值 | 结论 |
+| --- | --- | --- |
+| `(-1471,425)` | `5.22e-06 @ draw 4` | PASS |
+| `(-1866,927)` | `8.64e-06 @ draw 4` | PASS |
+
+两次都落在 draw 4，与 Shivaxi 命中点同构（前 4 个类别各掷一次，ultrarare 第 5 次）。预筛无漏判。
+
+另记：`测试/data/reccomplex-structuredata.dat` 已被 RC 重写为 81 字节（`checkedChunks` 为空），
+该存档的 RC 元数据已丢失，只剩 TSV 备份；`测试的副本` 的 28 KB 数据虽然读不出，但内容完整。
+用副本继续，别再用 `测试`。
+
+部署：`407,295` 字节，SHA-256 `c3bf5c30…`（`deployToRlcraft` 本次被跳过，直接复制到 `mods/`）。
+
+### 45.12 「生成后核实」测错了阶段：新区候选被整批丢弃（14:46）
+
+#### 现象
+`/rlcompass turbo on` + `/rlcompass scan icecity 6250`，在**全新**世界（种子
+`1392971457497389007`，`新的世界--`）扫满 1.56 亿 chunk：
+
+```
+156275001 chunks, 997491 prefiltered, 24747 eligible, 0 candidate(s),
+28 rejected by the placer, 0 already generated in 109 s [turbo 40 ms/tick]
+```
+
+28 个候选全部记为 `skipped: RC generated the chunk during the dry-run and did not place it`，
+其中就包含 `chunk(-1471,425)` 与 `chunk(-1866,927)`——用户随后 tp 过去，两座冰原城市
+**都在**，Y=80。
+
+#### 取证
+| 证据 | 结果 |
+| --- | --- |
+| `grep "recorded 'P_IceCity'"` | 只有 `14:37:05` / `14:37:41`（用户 tp 之后），扫描期间 0 条 |
+| 14:34:40–14:34:58 的 `[RC] recorded` | 0 行 |
+| `region/r.-46.13.mca` 全部 297 个区块的时间戳 | 全部落在 `14:37:40~14:37:52`，扫描的 14:34 没有写入 |
+| 候选点区域文件（如 `r.38.19.mca`） | 不存在 |
+
+结论：**放置干跑只生成地形，不触发 populate；RC 的结构放置与 `structureOverlap` 判定都在
+populate 阶段完成。** 所以干跑刚结束时「查不到记录」是必然的，它不代表 RC 拒绝——
+这条判据把「尚未决定」当成了「拒绝」，于是**每一个新区候选都被丢掉**，只有落在已生成区域的
+候选才可能通过。之前 2026-11-07 上午 94 个候选全 0、20 个 tp 点全空，也都由这条错误判据
+放大（那些点确实被别的结构占了，但判据说不出理由）。
+
+#### RC 的真实判定（反编译 `StructureGenerator`）
+```
+RCConfig.avoidOverlappingGeneration
+  && !allowOverlaps
+  && !worldData.entriesAt(boundingBox).noneMatch(Entry::blocking)
+  -> GenerationResult.Failure.structureOverlap
+```
+（`invokedynamic` 的 MethodHandle 是 `WorldStructureGenerationData$Entry.blocking:()Z`，
+即只有 `blocking` 条目会阻挡。）
+
+#### 修复
+`Replay.placementY` 改为返回 `Placement{y, boundingBox}`；新增 `Replay.overlapAt(box)`，
+用同一张 `WorldStructureGenerationData` 的 `entriesAt(boundingBox)` 复现上述判定，
+命中的第一个 `blocking` 条目就作为占位结构名上报。候选处理改为：
+
+```
+placement == null                  -> rejected by RC's placer（地形不符，计数 deepRejected）
+overlapAt(box) != null             -> 跳过并报出占位者（计数 deepOverlap）
+否则                                -> 候选（confirmed / predicted 两种措辞）
+```
+
+`hasStructureNear` 保留，但只用于措辞（`confirmed by RC's record` vs
+`predicted, RC decides when the chunk is populated`），不再是否决条件。
+
+#### 验收
+重启游戏后在 `新的世界--` 跑：
+
+```mcfunction
+/rlcompass scan icecity 6250
+```
+
+预期不再出现 28 个 `did not place it`；应报出 `chunk(-1471,425)` 或 `chunk(-1866,927)`
+附近的候选并 `first hit` 停扫（新世界 `entriesAt` 为空，不会判重叠）。
+
+部署：`409,365` 字节，SHA-256 `2376e487…`，`mods/` 同哈希。版本仍 **1.3.0 未发布**，
+未提交、未推送。
+
+### 45.13 作者故乡的传送落点：按结构高度锚定（16:05）
+
+#### 现象
+修复 §45.12 后用户首次成功找到作者故乡，但仓库「传送」把他送进了**地下冰窟**。
+
+#### 原因
+`SurfaceTeleport.find(world, x, z)` 只按 X/Z 处理：从该列最高点往下扫，取第一个
+「脚下实心、头上两格空」的位置。`P_IceCity` 是下沉式城市——地面层在冰原表面之下，
+中庭直通天空，于是这一列从上到下几乎全是空气，第一个可站立面出现在**地下室地板**。
+
+#### 修复
+`PacketTeleportRequest` 本来就带 `structureId`，第一版把带 id 的重载加在 `SurfaceTeleport`
+里面（16:05）。用户随后要求**把作者故乡的逻辑单独成类，其他结构一律走旧逻辑**，于是 16:46
+改成：
+
+```
+PacketTeleportRequest
+  IceCityTeleport.matches(id) -> IceCityTeleport.find(world, x, y, z)
+  找不到落点 / 其他结构        -> SurfaceTeleport.findNear(world, x, y, z)
+```
+
+`SurfaceTeleport` 为此完全恢复原样（删掉带 id 的重载与窗口版 `find`），新逻辑只存在于
+`util/IceCityTeleport.java`：
+
+```
+IceCityTeleport.find
+  窗口 [y-6, y+36]（BELOW=6 / ABOVE=36）
+  环状搜索半径 16，逐列自上而下
+  接受条件：实心、非液体、非危险方块、非树干；脚与头两格为空
+```
+
+窗口的设计意图：下界 `y-6` 把地下室排除在外，上界 `y+36` 让屋顶/上层先于地底被选中；
+某一列在窗口内没有可用点时会继续向外扩环，因此即使正上方是天井，也能落到同一层级的平台上。
+窗口内确实找不到落点才回退到通用规则，不会比旧行为更差。
+
+`y` 来自仓库条目：扫描写入的是 `placementY` 的 `StructureBoundingBox.minY`（约 53），
+RC 记录写入的是包围盒中心高度（约 80），两种锚点都落在窗口覆盖范围内。
+
+#### 验收
+在 `新的世界--` 打开仓库，对 `作者故乡` 点「传送」：应落在城市地面/屋顶，而不是冰窟；
+`rlcompass.teleport.success` 播报的 Y 应明显高于 50（16:41 实测落在 `(-14905, 69, -1042)`）。
+其他结构的传送点需回归一次（龙穴应在地下、天空之城应在岛上、末地污浊岛应在岛面）。
+
+部署：`412,258` 字节，SHA-256 `c1ba1f40…`，`build/libs` 与 `mods/` 同哈希
+（`deployToRlcraft` 自动落盘，上一版备份 `build/deploy-backup/20261107-160554`）。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+### 45.14 预测候选的边界：只有作者故乡可以「赌」（16:46）
+
+#### 现象
+`shivaxi 6250`（16:35，`新的世界--`）：
+
+```
+16:36:13 candidate #1 for Shivaxi at (55662, ~, -34399) chunk(3478,-2151)
+         predicted, RC decides when the chunk is populated
+16:36:13 first hit: 48129431 chunks, 22039 eligible, 1 candidate(s), 21 overlap, 0 already generated
+```
+
+玩家传送过去是**空地**。同一轮里 `overlapAt` 已经替 21 个候选提前排除了冲突点，
+只有这 1 个「无冲突但未确认」的预测混了过去。
+
+#### 原因
+§45.12 为了让新区能找到冰原城，把 `hasStructureNear` 从**否决条件**降级成了**措辞**。
+对 `P_IceCity` 这是必要的（否则新区 28 个候选全被丢），但对所有目标一起放开就产生了
+假阳性：RC 在填充阶段还可能因为**同批生成的其他结构**或地形一致性拒绝，扫描期看不到。
+
+#### 修复
+新增 `allowsPrediction(Target)`，只有 `rlcompass:icecity` 返回 true；三处候选判定
+（tile 深扫 `scanChunk`、`Session.candidates`、同步 `Replay.scan`）都加了这一道：
+
+```
+confirmed（已有记录）                     -> 上报
+!confirmed && allowsPrediction(target)     -> 上报为 predicted（仅作者故乡）
+!confirmed && !allowsPrediction(target)    -> 丢弃，计入 deepRejected
+```
+
+`overlapAt` 保留（零成本，命中率 21/22）。聊天栏的「已排除 N 个位置」文案改为
+「地形不符，或还没被 RC 确认」。
+
+#### 代价（必须说明）
+天空之城、作者大厅在**从未生成过**的区域会回到「扫不到」——这正是 14:46 之前的行为。
+它们已有的记录仍会通过 `knownHit` 短路秒回；想在新区域找，需要先在该区域活动让 RC
+自行生成，或接受 1 次空跑。这是「不给空坐标」的取舍，用户已确认按此执行。
+
+#### 验收
+重启后在同一位置跑：
+
+```mcfunction
+/rlcompass scan shivaxi 6250
+```
+
+预期：不再出现 `predicted` 的 Shivaxi 候选；有记录则秒回 `already recorded`，
+没有记录则扫满后播报「没有候选」并提示换区域。作者故乡仍可返回 `predicted` 候选。
+
+### 45.15 候选人不再靠猜：强制填充后核实（17:00）
+
+#### 背景
+用户问「你使用的是什么时期的代码」——**没有回退任何提交**，工作区始终是 1.3.0 的最新改动。
+天空之城又找不到，是因为 16:46 的严格门控：没有记录就丢弃，于是新区只剩「扫不到」。
+但这暴露了更根本的问题——扫描从来没有真正看到 RC 的决定。
+
+#### 关键实现
+`ChunkProviderServer.chunkGenerator` 是 `public final`，`Chunk.populate(IChunkProvider,
+IChunkGenerator)` 与 `isTerrainPopulated()` 也都是公开 API（`build/classes/java/patchedMc` 反查确认）。
+于是新增 `Replay.materialize(chunkX, chunkZ)`：
+
+```java
+ChunkProviderServer provider = (ChunkProviderServer) ((WorldServer) world).getChunkProvider();
+Chunk chunk = provider.provideChunk(chunkX, chunkZ);
+if (!chunk.isTerrainPopulated()) {
+    chunk.populate(provider, provider.chunkGenerator);   // <- 这里才跑 GameRegistry.generateWorld
+}
+return true;                                             // RC 的决定此刻已定稿
+```
+
+候选流程变成：
+
+```
+placementY == null            -> rejected by RC's placer
+overlapAt(box) != null        -> 跳过（会报占位结构名）
+hasStructureNear              -> 命中（已有记录）
+materialize 后 hasStructureNear -> 命中（真实放置）
+仍无记录                       -> 跳过（RC 确实拒绝）
+作者故乡例外                   -> 不 materialize，保持 predicted
+```
+
+作者故乡不 materialize 是有意的：它的 `SelectivePlacer` 在本模组里被放宽成了 `!air`
+（见 §44），强制填充会让**扫描去创建城市**而不是定位城市。其他目标没有这个副作用。
+
+#### 副作用与边界
+- `Chunk.populate` 受 `isTerrainPopulated` 保护，玩家去过的区块不会被二次填充；
+- 每个候选会生成结构足迹内的区块（Shivaxi 约 13×13），22 个候选实测可接受；
+- 强制填充的顺序由扫描决定，可能与自然探索略有差异，但**结构确实会存在于存档里**，
+  不会出现「报了坐标却没有」；
+- 填充会把区块标记为已处理，下次扫描按 `alreadyProcessed` 跳过——语义正确。
+
+#### 验收
+重启后在同一位置重跑：
+
+```mcfunction
+/rlcompass scan shivaxi 6250
+```
+
+预期：要么命中**真实存在**的坐标（日志 `confirmed by RC's record`），要么明确报没有候选；
+不再出现 `predicted` 的天空之城。作者故乡仍返回 `predicted`（其落点 16:41 实测
+`(-14905, 69, -1042)`，用户已确认正确）。
+
+部署：`412,876` 字节，SHA-256 `33cdb797…`，`build/libs` 与 `mods/` 同哈希。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+### 45.16 回到 14:46 之前的判定，作者故乡单独例外（17:09）
+
+#### 用户的判断
+「今天最开始的代码，除了作者故乡其他的都能找到」——这是对的。中间两次"改良"都偏离了目标：
+
+| 时间 | 改动 | 结果 |
+| --- | --- | --- |
+| 14:46 | `hasStructureNear` 降级为措辞 + `overlapAt` 预筛 | 作者故乡能找到了，但预测候选会报空点（16:36 天空之城） |
+| 16:46 | 恢复严格门控，但 `overlapAt` 排在 `hasStructureNear` **之前** | 天空之城**又找不到**：目标的包围盒与它自己的记录相交，被自己挡掉 |
+| 17:00 | 强制 `Chunk.populate` 后核实 | 能拿到 RC 的真实决定，但让扫描去推进世界生成 |
+
+#### 当前实现（17:09）
+三处候选判定（tile 深扫 `scanChunk`、`Session.candidates`、同步 `Replay.scan`）统一为：
+
+```
+placementY == null                        -> 排除（rejected by placer）
+!allowsPrediction(target) && Y 已知 && 无记录 -> 排除
+其余                                        -> 上报
+```
+
+`allowsPrediction(target)` 仅对 `rlcompass:icecity` 为 true。`overlapAt` 与 `materialize`
+的调用与实现一并删除，结束摘要恢复「candidate(s) / rejected by the placer / already generated」。
+
+`Y_UNKNOWN` 依旧**放行**——这是 14:46 之前就有的行为，不是新加的口子。
+
+#### 作者故乡的两个专属
+1. 搜索：允许未确认候选（`allowsPrediction`）；
+2. 传送：`IceCityTeleport` 在 `[y-6, y+36]` 窗口内锚定。
+
+另外它的 `SelectivePlacer.sourceMatcher` 仍被放宽为 `!air`（§44），这是「能找到城市」的前提，
+也是唯一一处触碰游戏内容的地方，已向用户说明并等待其决定。
+
+#### 验收
+重启后在同一位置跑：
+
+```mcfunction
+/rlcompass scan shivaxi 6250
+```
+
+预期：与 14:46 之前一致——已有记录的目标直接命中；作者故乡仍返回候选（predicted）。
+
+部署：`411,313` 字节，SHA-256 `2020949e…`，`build/libs` 与 `mods/` 同哈希。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+### 45.17 真根因：扫描没等 RC 决定；撤掉 sourceMatcher 放宽（17:18）
+
+#### 用户的指正
+「同一种子，测试存档里有两座作者故乡，新世界同一坐标也生成了，但指南针找不到」——
+这说明问题不在表面条件，而在**核实的时机**。`sourceMatcher` 放宽（11-06 加）只是让更多候选
+通过干跑，与「本来就该找到的那两个坐标」无关，而且它改的是游戏内容。
+
+#### 根因（复述 §45.12 的结论）
+放置干跑只生成地形；RC 在 **populate** 阶段才放置并写记录。所以扫描查记录时永远是
+「还没决定」，旧判据把它当成「RC 拒绝」，于是把真实候选取掉。
+
+#### 最终实现（17:18）
+1. **删除 `relaxSourceMatcher`**（连同 `sourceMatcherRelaxed` 字段与调用）——不再触碰
+   `P_IceCity` 的 `sourceExpression: "ICE"`，恢复原版条件；
+2. **候选改为强制填充后核实**，三处判定统一：
+
+```java
+boolean accepted = hasStructureNear(target, x, z);
+if (!accepted && materialize(chunkX, chunkZ)) {   // Chunk.populate + isTerrainPopulated 保护
+    accepted = hasStructureNear(target, x, z);
+}
+if (!accepted && placement.known()) { 排除 }
+```
+
+`materialize` 用 `ChunkProviderServer.chunkGenerator`（public final）与
+`Chunk.populate(IChunkProvider, IChunkGenerator)`；玩家去过的区块不会被二次填充。
+
+#### 与 17:09 的区别
+17:09 撤掉 materialize 是因为当时它和 `allowsPrediction`、`overlapAt` 混在一起，把天空之城
+误杀；这次只保留 materialize，且它作用于**所有**目标，没有特例。`overlapAt` 仍不启用
+（它会命中目标自身记录）。
+
+#### 验收（关键）
+在 `新的世界--`（种子 1392971457497389007）站 (0,0) 跑：
+
+```mcfunction
+/rlcompass scan icecity 6250
+```
+
+预期：**`chunk(-1471,425)` 与 `chunk(-1866,927)` 会作为候选被报出**——即 `测试` 存档里
+那两座城的坐标。日志出现 `confirmed by RC's record`，不再有
+`relaxed P_IceCity sourceMatcher`。若某个候选被 `rejected by RC's placer`，说明该处表面
+确实不是冰（原版也不会生成），属正确行为。
+
+部署：`411,357` 字节，SHA-256 `9ee4076c…`，`build/libs` 与 `mods/` 同哈希。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+### 45.18 干跑的「拒绝」不可信：先查记录，再强制填充（17:32）
+
+#### 日志（17:25，世界 `1`，种子 1392971457497389007）
+```
+17:25:47 deep scan for P_IceCity started ...
+17:28:22 finished: 156275001 chunks, 997491 prefiltered, 24747 eligible,
+        0 candidate(s), 28 rejected by the placer, 0 already generated in 155 s
+```
+
+撤掉 `relaxSourceMatcher`（17:18）之后，28 个候选**全部在 `placementY` 阶段被拒**，一个都没
+进入核实。而用户 `tp -23516 68 6814` 看到城市就在那里——即 `测试` 存档里的第一座城。
+
+结论：**放置干跑的拒绝不可信**。它用 `SelectivePlacer` 在 `sealevel-10..sealevel` 里取一个源
+位置测 `sourceExpression: "ICE"`，但 RC 真正生成时走的是另一条路径，能在这个位置放下。
+干跑只适合回答「大概在哪一层」，不适合否决候选。
+
+#### 新顺序（三处判定统一）
+```java
+boolean confirmed = hasStructureNear(target, x, z);          // 1. 有记录：直接认定
+Placement placement = confirmed ? null : placementY(...);    //    干跑只用来取传送 Y
+if (!confirmed) {                                            // 2. 没记录：强制填充
+    materialize(chunkX, chunkZ);
+    confirmed = hasStructureNear(target, x, z);              //    RC 的真实决定
+}
+if (!confirmed) { 排除 }                                      // 3. 填充后仍没有：确实没放
+int y = placement != null && placement.known()
+        ? placement.y : recordY(target, x, z);                // 传送 Y：干跑 → 记录兜底
+```
+
+`placement == null` 不再是淘汰理由；`recordY` 从 RC 记录里取包围盒中心高度作为传送锚点。
+
+#### 回答「什么时候变成改游戏规则」
+`relaxSourceMatcher` 是 **2026-11-06 19:48** 加的（当时为了绕开 ICE、让干跑能过），
+14:46 的 `overlapAt` 方案本身是搜索判定，没有动游戏内容。问题在于 15:xx 用户明确「只做搜索、
+不改游戏内容」后，我口头作废却没有删代码，它一直留在 `placementY` 里——17:18 已删除。
+这次日志里不再出现 `relaxed P_IceCity sourceMatcher`，可作证明。
+
+部署：`411,443` 字节，SHA-256 `64f42c17…`，`build/libs` 与 `mods/` 同哈希。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+### 45.19 强制填充为什么没生效：Chunk.populate 要求四邻已加载（17:47）
+
+#### 日志（17:43–17:45，世界 `2`）
+```
+17:43:54 ... candidate at (50023, 2221) chunk(3125,138) skipped: RC did not place it even after the chunk was populated
+...
+17:45:21 finished: 156275001 chunks, 24747 eligible, 0 candidate(s), 28 rejected, 0 already generated in 114 s
+17:45:42 [CHAT] 你 传送到 -23515.5, 100.0, 6814.5
+17:45:43 [RC] recorded 'P_IceCity' at (-23516, 80, 6814)     <- 玩家 tp 之后才写记录
+```
+
+新日志文案说明 17:32 版已加载，`materialize` 也确实被调用（28 次），但没有抛异常、也没有让
+RC 放置。城市是在玩家 tp 的**那一秒**才生成的。
+
+#### 根因（反编译 `net.minecraft.world.chunk.Chunk`）
+`Chunk.populate(IChunkProvider, IChunkGenerator)` 开头会用 `getLoadedChunk` 检查
+`(x-1,z)`、`(x+1,z)`、`(x,z+1)`、`(x-1,z)` 等邻居；只要有一个为 `null` 就**什么都不做直接返回**，
+而真正干活的是受保护的 `populate(IChunkGenerator)`（内部才判 `isTerrainPopulated`）。
+换言之：**孤立地填充一个区块是无效的**，正好解释了「扫描说没放、玩家一到就有」。
+
+#### 修复
+`materialize` 先 `provider.provideChunk` 生成 3×3 邻居，再填充中心区块（MC 会一次处理 2×2）。
+代价是每个候选要多生成 8 个区块，扫描耗时会略增。
+
+部署：`411,542` 字节，SHA-256 `48e64494…`，`build/libs` 与 `mods/` 同哈希。
+版本仍 **1.3.0 未发布**，未提交、未推送。
+
+## 46. 1.3.0 发布（2026-11-07 18:10）
+
+### 46.1 验收依据
+用户用种子 `1392971457497389007` 新建世界，从 `(0,0)` 出发依次搜索全部热门结构，
+**全部命中**（含作者故乡）。据此把当前工作区定为 **1.3.0**。
+
+### 46.2 本版内容
+- turbo 扫描（40 ms/tick，覆盖全部 RC 目标）；通用深扫 RNG 预筛；`/rlcompass biome`；
+- 候选改为「先查记录 → 未命中则强制填充（3×3 邻居 + `Chunk.populate`）→ 再查」；
+- 作者故乡的传送落点独立为 `IceCityTeleport`；`SurfaceTeleport` 保持原样；
+- 作者故乡的 `sourceExpression` 恢复原版 `ICE`（运行时放宽已删除）。
+
+### 46.3 产物
+- `build/libs/rlcraft-explorers-compass.jar`，`411,542` 字节；
+- SHA-256 `61404c90d18adb97da56b0f507c38aee00bc76cf125110fcab073a8714a60916`；
+- `mods/` 下同一哈希，版本号 `1.3.0`。
+
+### 46.4 发布步骤（沿用 1.2.0 的经验）
+本机 `git push` 的 22 端口被封、HTTPS 受 schannel 吊销检查限制，改用
+`ssh://git@ssh.github.com:443/...`（主机密钥已核对）。Release 走 API：
+先 `POST /git/refs` 建 tag，再 `POST /releases`，最后上传资产；`curl` 需 `--ssl-no-revoke`。
